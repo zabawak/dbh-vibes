@@ -1,0 +1,22 @@
+[project]
+name = "dbh-vibes"
+version = "0.1.0"
+description = "Ball hockey video analysis — player detection, tracking, and stats attribution"
+requires-python = ">=3.11"
+dependencies = [
+    "ultralytics>=8.3.0",
+    "supervision>=0.25.0",
+    "opencv-python>=4.10.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+]
+
+[project.scripts]
+dbh-vibes = "dbh_vibes.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
