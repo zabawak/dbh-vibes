@@ -115,6 +115,10 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.
 - A simple report/dashboard per game; possibly near-real-time processing on a GPU.
 
+For the broader, prioritized menu of stats/pipeline/UX features (ball detection, possession,
+shots/goals, movement load, dashboards, quick wins like auto-clipping and human-in-the-loop
+identity), see **[feature-ideas.md](feature-ideas.md)**.
+
 ## Compute guidance
 - **Phase 1 & 2**: validated end-to-end on **CPU** (4 cores) with `yolo11s`. A 30s 720p clip takes
   a few minutes; SigLIP team fitting adds ~2 min. The per-track team trick keeps SigLIP affordable

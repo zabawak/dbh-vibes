@@ -8,7 +8,8 @@ full vision: detect people in a clip from a single fixed camera, track them with
 and emit a per-track **presence table** as a first proxy for "time on ice."
 
 See [`docs/research-landscape.md`](docs/research-landscape.md) for the survey of open-source
-tooling and [`docs/architecture.md`](docs/architecture.md) for the phased roadmap.
+tooling, [`docs/architecture.md`](docs/architecture.md) for the phased roadmap, and
+[`docs/feature-ideas.md`](docs/feature-ideas.md) for the broader prioritized feature menu.
 
 ## What works today (Phase 1 MVP)
 
