@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="With --phase2, skip SigLIP team classification (faster, no team colors).",
     )
+    parser.add_argument(
+        "--no-surface-filter",
+        action="store_true",
+        help="With --phase2, don't filter out off-court spectators/bench by playing surface.",
+    )
     return parser
 
 
@@ -98,6 +103,7 @@ def _run_phase2(args) -> int:
             conf=args.conf,
             tracker=args.tracker,
             use_siglip_teams=not args.no_siglip,
+            filter_to_surface=not args.no_surface_filter,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -105,9 +111,12 @@ def _run_phase2(args) -> int:
 
     a = result.activity
     print(f"Processed {result.frame_count} frames @ {result.fps:.1f} fps")
-    print(f"Distinct track ids: {len(result.tracks)}")
+    surf = "auto-detected" if result.surface_found else "NOT found (filter off)"
+    print(f"Playing surface: {surf}")
+    print(f"Tracks: {len(result.tracks)} total -> "
+          f"{result.n_players} players, {result.n_spectators} spectators/bench (filtered out)")
     print(f"Active play: {a.active_fraction*100:.0f}% of frames "
-          f"(mean {a.mean_players:.1f} players/frame, spread {a.mean_spread:.3f})")
+          f"(mean {a.mean_players:.1f} on-surface players/frame, spread {a.mean_spread:.3f})")
     if result.team_seconds:
         for team, secs in sorted(result.team_seconds.items()):
             print(f"  Team {team}: {secs:.0f} active player-seconds")

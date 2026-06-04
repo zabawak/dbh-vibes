@@ -28,10 +28,12 @@ from ultralytics import YOLO
 
 from dbh_vibes.activity import ActivitySummary, detect_activity, foot_points
 from dbh_vibes.spatial import PositionHeatmap
+from dbh_vibes.surface import estimate_surface_mask, on_surface
 from dbh_vibes.team_siglip import SiglipTeamClassifier, assign_teams_by_track, crop_box
 
 PERSON_CLASS_ID = 0
 TEAM_COLORS_BGR = {0: (60, 220, 60), 1: (60, 60, 240)}  # green / red
+SPECTATOR_COLOR_BGR = (130, 130, 130)  # gray for off-surface detections
 UNKNOWN_COLOR_BGR = (200, 200, 200)
 
 
@@ -42,8 +44,16 @@ class TrackStat:
     last_frame: int
     frames_seen: int = 0
     active_frames: int = 0           # frames seen while play was live
+    on_surface_frames: int = 0       # frames whose foot point was on the playing surface
     areas: list[float] = field(default_factory=list)
     team: int | None = None
+
+    def on_surface_frac(self) -> float:
+        return self.on_surface_frames / self.frames_seen if self.frames_seen else 0.0
+
+    def is_player(self, min_frames: int, min_frac: float) -> bool:
+        """A player spends most of its time on the surface; spectators/bench do not."""
+        return self.frames_seen >= min_frames and self.on_surface_frac() >= min_frac
 
 
 @dataclass
@@ -56,6 +66,9 @@ class Phase2Result:
     activity: ActivitySummary
     tracks: dict[int, TrackStat]
     team_seconds: dict[int, float]
+    n_players: int
+    n_spectators: int
+    surface_found: bool
 
 
 def run_phase2(
@@ -65,6 +78,8 @@ def run_phase2(
     conf: float = 0.25,
     tracker: str = "bytetrack.yaml",
     use_siglip_teams: bool = True,
+    filter_to_surface: bool = True,
+    min_surface_frac: float = 0.5,
     min_track_frames: int = 15,
     min_player_area: float = 1500.0,
     crops_per_track: int = 6,
@@ -82,6 +97,10 @@ def run_phase2(
     info = sv.VideoInfo.from_video_path(str(source))
     fps = float(info.fps)
     model = YOLO(model_name)
+
+    # Auto-derive the playing surface from this video's pixels (re-derived per run, so it follows
+    # the camera if its position changes). None => detection failed, fall back to no filtering.
+    surface = estimate_surface_mask(str(source)) if filter_to_surface else None
 
     # ---- Pass A: detect + track, buffer everything except frames ----
     frame_boxes: list[list[tuple[int, np.ndarray]]] = []  # per frame: [(track_id, xyxy), ...]
@@ -102,9 +121,12 @@ def run_phase2(
         boxes_this: list[tuple[int, np.ndarray]] = []
         if det.tracker_id is not None:
             feet = foot_points(det.xyxy)
-            per_frame_feet.append(feet)
-            heat.add(feet)
-            for box, tid in zip(det.xyxy, det.tracker_id):
+            surf = on_surface(feet, surface) if surface is not None else np.ones(len(feet), bool)
+            # Activity + heatmap consider only on-surface players, so the bench can't trigger them.
+            on_feet = feet[surf]
+            per_frame_feet.append(on_feet)
+            heat.add(on_feet)
+            for i, (box, tid) in enumerate(zip(det.xyxy, det.tracker_id)):
                 tid = int(tid)
                 boxes_this.append((tid, box))
                 area = float((box[2] - box[0]) * (box[3] - box[1]))
@@ -115,8 +137,12 @@ def run_phase2(
                 ts.last_frame = fi
                 ts.frames_seen += 1
                 ts.areas.append(area)
-                # sample a few sufficiently-large crops per track for team classification
-                if area >= min_player_area and len(track_crops[tid]) < crops_per_track and ts.frames_seen % 10 == 1:
+                if surf[i]:
+                    ts.on_surface_frames += 1
+                # Collect team-classification crops only from on-surface detections, so the team
+                # model isn't trained on spectators/bench.
+                if (surf[i] and area >= min_player_area
+                        and len(track_crops[tid]) < crops_per_track and ts.frames_seen % 10 == 1):
                     c = crop_box(r.orig_img, box)
                     if c is not None and c.shape[0] > 20 and c.shape[1] > 10:
                         track_crops[tid].append(c)
@@ -125,6 +151,7 @@ def run_phase2(
         frame_boxes.append(boxes_this)
 
     frame_count = len(frame_boxes)
+    players = {t for t, ts in tracks.items() if ts.is_player(min_track_frames, min_surface_frac)}
 
     # ---- Activity classification ----
     activity = detect_activity(per_frame_feet, info.width)
@@ -133,12 +160,9 @@ def run_phase2(
             for tid, _ in boxes_this:
                 tracks[tid].active_frames += 1
 
-    # ---- Team assignment (per track, majority vote) ----
+    # ---- Team assignment (per track, majority vote) — players only ----
     if use_siglip_teams:
-        player_crops = {
-            t: cs for t, cs in track_crops.items()
-            if cs and tracks[t].frames_seen >= min_track_frames
-        }
+        player_crops = {t: track_crops[t] for t in players if track_crops.get(t)}
         if player_crops:
             clf = SiglipTeamClassifier()
             clf.fit([c for cs in player_crops.values() for c in cs])
@@ -157,13 +181,18 @@ def run_phase2(
                 break
             live = fi < len(activity.per_frame_active) and activity.per_frame_active[fi]
             for tid, box in frame_boxes[fi]:
-                team = tracks[tid].team
-                color = TEAM_COLORS_BGR.get(team, UNKNOWN_COLOR_BGR)
+                ts = tracks[tid]
+                is_player = tid in players
+                if is_player:
+                    color = TEAM_COLORS_BGR.get(ts.team, UNKNOWN_COLOR_BGR)
+                    label = f"#{tid}" + (f" T{ts.team}" if ts.team is not None else "")
+                else:
+                    color = SPECTATOR_COLOR_BGR  # off-surface: bench / spectator
+                    label = "spec"
                 x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                label = f"#{tid}" + (f" T{team}" if team is not None else "")
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1 if not is_player else 2)
                 cv2.putText(frame, label, (x1, max(0, y1 - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1 if not is_player else 2)
             banner = "LIVE PLAY" if live else "IDLE"
             bcolor = (60, 220, 60) if live else (160, 160, 160)
             cv2.putText(frame, banner, (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, bcolor, 2)
@@ -171,35 +200,41 @@ def run_phase2(
         cap.release()
 
     # ---- Stats output ----
-    team_seconds = _write_csv(csv_path, tracks, fps)
+    team_seconds = _write_csv(csv_path, tracks, players, fps)
 
     return Phase2Result(
         annotated_path=annotated_path, heatmap_path=heatmap_path, csv_path=csv_path,
         fps=fps, frame_count=frame_count, activity=activity, tracks=tracks,
-        team_seconds=team_seconds,
+        team_seconds=team_seconds, n_players=len(players),
+        n_spectators=len(tracks) - len(players), surface_found=surface is not None,
     )
 
 
-def _write_csv(csv_path: Path, tracks: dict[int, TrackStat], fps: float) -> dict[int, float]:
-    """Write per-track stats; return per-team active-play seconds aggregate."""
+def _write_csv(
+    csv_path: Path, tracks: dict[int, TrackStat], players: set[int], fps: float
+) -> dict[int, float]:
+    """Write per-track stats; return per-team active-play seconds aggregate (players only)."""
     team_seconds: dict[int, float] = defaultdict(float)
-    fields = ["track_id", "team", "first_frame", "last_frame", "frames_seen",
-              "seconds_on_surface", "active_seconds", "median_area_px"]
+    fields = ["track_id", "role", "team", "first_frame", "last_frame", "frames_seen",
+              "seconds_on_surface", "active_seconds", "on_surface_frac", "median_area_px"]
     with csv_path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for ts in sorted(tracks.values(), key=lambda t: t.active_frames, reverse=True):
+            is_player = ts.track_id in players
             active_s = round(ts.active_frames / fps, 2) if fps else 0.0
-            if ts.team is not None:
+            if is_player and ts.team is not None:
                 team_seconds[ts.team] += active_s
             w.writerow({
                 "track_id": ts.track_id,
-                "team": ts.team if ts.team is not None else "",
+                "role": "player" if is_player else "spectator",
+                "team": ts.team if (is_player and ts.team is not None) else "",
                 "first_frame": ts.first_frame,
                 "last_frame": ts.last_frame,
                 "frames_seen": ts.frames_seen,
                 "seconds_on_surface": round(ts.frames_seen / fps, 2) if fps else 0.0,
                 "active_seconds": active_s,
+                "on_surface_frac": round(ts.on_surface_frac(), 2),
                 "median_area_px": int(np.median(ts.areas)) if ts.areas else 0,
             })
     return dict(team_seconds)

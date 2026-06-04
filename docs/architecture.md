@@ -62,13 +62,17 @@ Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`
   Kept in **image space**: a single planar homography to a top-down view is unreliable on this
   fixed fisheye with the near boards occluded, so an honest image-space map is the base for a
   properly calibrated top-down view later.
-- **Active-play detection** (`activity.py`) — gates on player count + horizontal spread to
-  separate live play from bench downtime. Validated: gameplay 100% live vs. a break 0% live.
-  `time_on_surface` accrues only during live frames.
+- **Active-play detection** (`activity.py`) — gates on on-surface player count + horizontal
+  spread to separate live play from bench downtime. Validated: gameplay 100% live vs. a break
+  0% live. `time_on_surface` accrues only during live frames.
+- **Playing-surface filter** (`surface.py`) — separates on-court players from bench/spectators
+  by keeping only detections whose foot point lands on the playing surface. The surface is
+  **auto-derived per run** from a time-median of the footage + court-color segmentation, so it
+  follows the camera if its position changes — no fixed polygon, no recalibration. Validated to
+  re-derive correctly under a simulated camera move. Disable with `--no-surface-filter`. Tracks
+  are tagged `player`/`spectator` in `tracks.csv`; only players get teams and time totals.
 
 ### Still open in Phase 2
-- **Filter spectators/bench from "players"** before team assignment (they currently pollute the
-  non-red cluster) — region masking or a player-vs-crowd gate.
 - **Fine-tune a ball-hockey detector** for `ball`, `goalie`, `referee` classes (needs labeled
   clips; reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset) where it transfers).
 - **Calibrated top-down rink map** once camera intrinsics/keypoints are available (fisheye
