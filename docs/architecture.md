@@ -71,7 +71,15 @@ spans; `--clips` also exports per-segment raw clips). Pipeline lives in
   bridging brief idle gaps and dropping sub-second blips. `--clips` re-uses the render pass to
   also write each segment as a raw clip under `<out>/clips/`. This is the compute-saving
   "process only live play" lever and the scaffolding the Phase 3 shift detector builds on. Pure
-  stdlib, unit-tested in `tests/test_segments.py`.
+  stdlib core, unit-tested in `tests/test_segments.py`.
+  - **Auto-clip pre-pass** (`autoclip.py`, `--autoclip`) — runs the *same* `segment_play` core,
+    but fed by a **detection-only pre-pass** (YOLO at a coarse `--clip-stride`, no tracker) so it
+    finds live play *before* paying for the full Phase 2 pass. Writes a `segments.json` manifest
+    with frame/second bounds **and a compute-savings estimate** (fraction skippable as dead time),
+    plus `segments.csv`; `--cut` slices each segment to its own mp4 via ffmpeg. Knobs:
+    `--min-segment`, `--merge-gap`, `--pad`. The expand-to-full-resolution + segment + pad logic is
+    pure and unit-tested in `tests/test_autoclip.py`. Validated on the reference footage: a
+    bench-break clip → 0 segments (skip 100%), live gameplay → ~skip 3%.
 - **Playing-surface filter** (`surface.py`) — separates on-court players from bench/spectators
   by keeping only detections whose foot point lands on the playing surface. The surface is
   **auto-derived per run** from a time-median of the footage + court-color segmentation, so it

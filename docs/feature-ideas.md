@@ -23,10 +23,13 @@ detection** and/or **homography**.
 
 ## Quick wins (cheap, high leverage)
 
-- **Auto-clip / dead-time skip** *(done — `segments.py`).* Collapses the `activity.py` signal into
-  contiguous live-play segments (`segments.csv`), bridging brief gaps and dropping blips; `--clips`
-  exports each segment as a raw clip. Big compute savings on a mostly-idle full game and the
-  scaffolding for shift detection. *Was: Low difficulty; depended on done pieces.*
+- **Auto-clip / dead-time skip** *(done — `segments.py` + `autoclip.py`).* Collapses the
+  `activity.py` signal into contiguous live-play segments (`segments.csv`), bridging brief gaps and
+  dropping blips. `--phase2 --clips` exports each segment as a raw clip from the full pass;
+  `--autoclip` is a cheap **detection-only pre-pass** that finds live play *before* the heavy pass
+  and writes a `segments.json` manifest with a **compute-savings estimate** (`--cut` slices clips via
+  ffmpeg). Big compute savings on a mostly-idle full game and the scaffolding for shift detection.
+  *Was: Low difficulty; depended on done pieces.*
 - **Human-in-the-loop identity.** Given no jersey numbers, a tiny labeling step beats perfect
   automation: show one crop per track cluster, let the user tag "that's player A / team X," then
   propagate. Turns a hard CV problem into a 2-minute review. *Low–medium; pairs with Phase 3.*
