@@ -65,6 +65,14 @@ Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`
 - **Active-play detection** (`activity.py`) — gates on on-surface player count + horizontal
   spread to separate live play from bench downtime. Validated: gameplay 100% live vs. a break
   0% live. `time_on_surface` accrues only during live frames.
+- **Auto-clip / dead-time skip** (`autoclip.py`, `--autoclip`) — finds the live-play stretches in a
+  long recording *before* the expensive analysis runs. A cheap detection-only pre-pass (coarse
+  `--clip-stride`, no tracker) feeds the same `activity.py` signal; contiguous live runs become
+  segments (short idle gaps bridged via `--merge-gap`, sub-`--min-segment` blips dropped, ends
+  padded by `--pad`), emitted as a `segments.json`/`.csv` manifest with a compute-savings estimate
+  and optionally cut to per-segment mp4s (`--cut`, ffmpeg). Validated on the reference clips: the
+  active clip returns ~all live, the bench-break clip yields zero segments (100% skippable). This
+  segmentation is also the basis for shift detection (Phase 3).
 - **Playing-surface filter** (`surface.py`) — separates on-court players from bench/spectators
   by keeping only detections whose foot point lands on the playing surface. The surface is
   **auto-derived per run** from a time-median of the footage + court-color segmentation, so it

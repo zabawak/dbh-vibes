@@ -19,6 +19,10 @@ phase2 = [
     "umap-learn>=0.5.6",
     "scikit-learn>=1.5.0",
 ]
+# Test tooling: pip install -e ".[dev]" && pytest
+dev = [
+    "pytest>=8.0",
+]
 
 [project.scripts]
 dbh-vibes = "dbh_vibes.cli:main"
