@@ -29,6 +29,11 @@ import numpy as np
 DEFAULT_HSV_LOW = (95, 120, 60)
 DEFAULT_HSV_HIGH = (128, 255, 255)
 
+# Outward margin added to the detected court, as a fraction of the larger frame dimension.
+# This catches goalies whose feet sit in the crease/net right at the boundary, while staying
+# smaller than the white-board band that separates the court from spectators behind it.
+DEFAULT_DILATE_FRAC = 0.012
+
 
 def estimate_surface_mask(
     video_path: str,
@@ -36,6 +41,7 @@ def estimate_surface_mask(
     hsv_low: tuple[int, int, int] = DEFAULT_HSV_LOW,
     hsv_high: tuple[int, int, int] = DEFAULT_HSV_HIGH,
     min_area_frac: float = 0.05,
+    dilate_frac: float = DEFAULT_DILATE_FRAC,
 ) -> np.ndarray | None:
     """Estimate a filled playing-surface mask from a video.
 
@@ -56,7 +62,7 @@ def estimate_surface_mask(
 
     # Time median removes transient players/objects, leaving the static court.
     median = np.median(np.stack(frames), axis=0).astype(np.uint8)
-    return surface_mask_from_frame(median, hsv_low, hsv_high, min_area_frac)
+    return surface_mask_from_frame(median, hsv_low, hsv_high, min_area_frac, dilate_frac)
 
 
 def surface_mask_from_frame(
@@ -64,12 +70,15 @@ def surface_mask_from_frame(
     hsv_low: tuple[int, int, int] = DEFAULT_HSV_LOW,
     hsv_high: tuple[int, int, int] = DEFAULT_HSV_HIGH,
     min_area_frac: float = 0.05,
+    dilate_frac: float = DEFAULT_DILATE_FRAC,
 ) -> np.ndarray | None:
     """Segment the court color in a single frame and fill it into a solid surface mask.
 
     We keep the largest connected court-colored region and fill only its *internal* holes
     (painted markings, players standing on it). We deliberately do not fill to the external
     contour, which would balloon over the boards into the sky/trees and defeat the filter.
+    A small outward dilation then includes edge goalies (feet in the crease/net) without
+    reaching spectators behind the boards.
     """
     h, w = frame.shape[:2]
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -99,7 +108,14 @@ def surface_mask_from_frame(
     ff_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
     cv2.floodFill(flood, ff_mask, (0, 0), 255)
     holes = cv2.bitwise_not(flood)
-    return cv2.bitwise_or(comp, holes)
+    filled = cv2.bitwise_or(comp, holes)
+
+    # Grow the boundary outward a touch so edge goalies (feet in the crease/net) count as on-court.
+    margin = int(dilate_frac * max(h, w))
+    if margin > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin + 1, 2 * margin + 1))
+        filled = cv2.dilate(filled, k)
+    return filled
 
 
 def on_surface(foot_points: np.ndarray, mask: np.ndarray) -> np.ndarray:
