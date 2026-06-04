@@ -37,8 +37,8 @@ def foot_points(boxes_xyxy: np.ndarray) -> np.ndarray:
 def detect_activity(
     per_frame_feet: list[np.ndarray],
     frame_width: int,
-    min_players: int = 7,
-    min_spread: float = 0.18,
+    min_players: int = 5,
+    min_spread: float = 0.15,
     smooth_window: int = 15,
 ) -> ActivitySummary:
     """Classify each frame as live play or idle from per-frame foot points.
