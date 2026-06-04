@@ -48,9 +48,10 @@ Validated on real footage from a single fixed fisheye camera. Run with:
 python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
-Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`, and an enriched
-`tracks.csv` (adds `team`, `active_seconds`, `median_area_px`). Pipeline lives in
-`src/dbh_vibes/pipeline.py` (two-pass: detect/track once → fit teams + activity → render).
+Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`, an enriched
+`tracks.csv` (adds `team`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
+spans; `--clips` also exports per-segment raw clips). Pipeline lives in
+`src/dbh_vibes/pipeline.py` (two-pass: detect/track once → fit teams + activity + segments → render).
 
 - **SigLIP team classification** (`team_siglip.py`) — embeds player crops with the SigLIP vision
   tower, reduces with UMAP, clusters with KMeans, mirroring roboflow/sports. Replaces the MVP
@@ -65,6 +66,12 @@ Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`
 - **Active-play detection** (`activity.py`) — gates on on-surface player count + horizontal
   spread to separate live play from bench downtime. Validated: gameplay 100% live vs. a break
   0% live. `time_on_surface` accrues only during live frames.
+- **Auto-clip / dead-time skip** (`segments.py`) — collapses the per-frame active signal into
+  contiguous **live-play segments** (written to `segments.csv` with frame/second bounds),
+  bridging brief idle gaps and dropping sub-second blips. `--clips` re-uses the render pass to
+  also write each segment as a raw clip under `<out>/clips/`. This is the compute-saving
+  "process only live play" lever and the scaffolding the Phase 3 shift detector builds on. Pure
+  stdlib, unit-tested in `tests/test_segments.py`.
 - **Playing-surface filter** (`surface.py`) — separates on-court players from bench/spectators
   by keeping only detections whose foot point lands on the playing surface. The surface is
   **auto-derived per run** from a time-median of the footage + court-color segmentation, so it
