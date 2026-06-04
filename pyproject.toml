@@ -11,6 +11,15 @@ dependencies = [
     "pandas>=2.2.0",
 ]
 
+[project.optional-dependencies]
+# Phase 2 SigLIP team classification. Heavy (transformers + umap); install with:
+#   pip install -e ".[phase2]"
+phase2 = [
+    "transformers>=4.45.0",
+    "umap-learn>=0.5.6",
+    "scikit-learn>=1.5.0",
+]
+
 [project.scripts]
 dbh-vibes = "dbh_vibes.cli:main"
 

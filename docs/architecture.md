@@ -40,17 +40,39 @@ We lean on **[supervision](https://github.com/roboflow/supervision)** for detect
 annotation (`BoxAnnotator`, `LabelAnnotator`), and video I/O (`VideoSink`, `VideoInfo`), and on
 **Ultralytics** for both detection and the bundled ByteTrack/BoT-SORT trackers.
 
-## Roadmap
+## Phase 2 — team ID, spatial stats, activity gating (implemented)
 
-### Phase 2 — sport-specific detection + spatial stats
-- **Fine-tune a ball-hockey detector**: label clips for `ball`, `goalie`, `referee` (+ player);
-  train YOLO11 (Roboflow/Label Studio → Ultralytics). Reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset)
-  where it transfers.
-- **Rink homography**: build a top-down ball-hockey rink template, label court keypoints, train a
-  keypoint model, project tracks to rink coordinates → **positions, heatmaps, zone time,
-  team-level aggregates** (possession %, shots-on-net counts).
-- Upgrade team classification to the SigLIP→UMAP→KMeans approach from roboflow/sports if the
-  color fallback proves fragile.
+Validated on real footage from a single fixed fisheye camera. Run with:
+
+```bash
+python -m dbh_vibes data/game.mp4 --out runs/game --phase2
+```
+
+Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`, and an enriched
+`tracks.csv` (adds `team`, `active_seconds`, `median_area_px`). Pipeline lives in
+`src/dbh_vibes/pipeline.py` (two-pass: detect/track once → fit teams + activity → render).
+
+- **SigLIP team classification** (`team_siglip.py`) — embeds player crops with the SigLIP vision
+  tower, reduces with UMAP, clusters with KMeans, mirroring roboflow/sports. Replaces the MVP
+  torso-color split, which collapsed on real footage. Classified **per track** (majority vote over
+  a few sampled crops), so a clip costs a few hundred embeds, not tens of thousands — practical
+  even on CPU (~2 min/clip). Validated: cleanly isolates the red-pinnie team with zero
+  contamination.
+- **Position heatmap** (`spatial.py`) — accumulates foot-point density into a colored overlay.
+  Kept in **image space**: a single planar homography to a top-down view is unreliable on this
+  fixed fisheye with the near boards occluded, so an honest image-space map is the base for a
+  properly calibrated top-down view later.
+- **Active-play detection** (`activity.py`) — gates on player count + horizontal spread to
+  separate live play from bench downtime. Validated: gameplay 100% live vs. a break 0% live.
+  `time_on_surface` accrues only during live frames.
+
+### Still open in Phase 2
+- **Filter spectators/bench from "players"** before team assignment (they currently pollute the
+  non-red cluster) — region masking or a player-vs-crowd gate.
+- **Fine-tune a ball-hockey detector** for `ball`, `goalie`, `referee` classes (needs labeled
+  clips; reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset) where it transfers).
+- **Calibrated top-down rink map** once camera intrinsics/keypoints are available (fisheye
+  undistort + homography) → zone time, possession %, shots-on-net.
 
 ### Phase 3 — player identity + event attribution
 - **Jersey-number OCR + appearance re-ID** to stitch track ids across occlusions and line
@@ -64,7 +86,8 @@ annotation (`BoxAnnotator`, `LabelAnnotator`), and video I/O (`VideoSink`, `Vide
 - A simple report/dashboard per game; possibly near-real-time processing on a GPU.
 
 ## Compute guidance
-- **Phase 1**: CPU is fine with `yolo11n`/`yolo11s` for offline clips (slow but works). A Colab
-  or local NVIDIA GPU (≥4 GB VRAM) makes it near real-time.
-- **Phase 2+**: local NVIDIA GPU (≥8 GB) or rented cloud/Colab GPU for fine-tuning and full-game
-  processing. Defer the buy/rent decision until Phase 2.
+- **Phase 1 & 2**: validated end-to-end on **CPU** (4 cores) with `yolo11s`. A 30s 720p clip takes
+  a few minutes; SigLIP team fitting adds ~2 min. The per-track team trick keeps SigLIP affordable
+  without a GPU. A Colab or local NVIDIA GPU (≥4 GB VRAM) makes it near real-time.
+- **Fine-tuning (open Phase 2 / Phase 3)**: local NVIDIA GPU (≥8 GB) or rented cloud/Colab GPU.
+  Defer the buy/rent decision until we actually start labeling and training.

@@ -37,13 +37,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--teams",
         action="store_true",
-        help="Cluster players into two teams by jersey color.",
+        help="Cluster players into two teams by jersey color (Phase 1, lightweight).",
+    )
+    parser.add_argument(
+        "--phase2",
+        action="store_true",
+        help="Run the Phase 2 pipeline: SigLIP team ID + position heatmap + active-play gating.",
+    )
+    parser.add_argument(
+        "--no-siglip",
+        action="store_true",
+        help="With --phase2, skip SigLIP team classification (faster, no team colors).",
     )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.phase2:
+        return _run_phase2(args)
 
     try:
         result = analyze_video(
@@ -70,6 +83,36 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Avg people on surface per frame: {avg_on_surface:.1f}")
     print(f"Total tracked player-seconds: {total:.1f}")
     print(f"Annotated video: {result.annotated_path}")
+    print(f"Track summary:   {result.csv_path}")
+    return 0
+
+
+def _run_phase2(args) -> int:
+    from dbh_vibes.pipeline import run_phase2
+
+    try:
+        result = run_phase2(
+            source=args.video,
+            out_dir=args.out,
+            model_name=args.model,
+            conf=args.conf,
+            tracker=args.tracker,
+            use_siglip_teams=not args.no_siglip,
+        )
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    a = result.activity
+    print(f"Processed {result.frame_count} frames @ {result.fps:.1f} fps")
+    print(f"Distinct track ids: {len(result.tracks)}")
+    print(f"Active play: {a.active_fraction*100:.0f}% of frames "
+          f"(mean {a.mean_players:.1f} players/frame, spread {a.mean_spread:.3f})")
+    if result.team_seconds:
+        for team, secs in sorted(result.team_seconds.items()):
+            print(f"  Team {team}: {secs:.0f} active player-seconds")
+    print(f"Annotated video: {result.annotated_path}")
+    print(f"Position heatmap: {result.heatmap_path}")
     print(f"Track summary:   {result.csv_path}")
     return 0
 

@@ -23,6 +23,27 @@ tooling and [`docs/architecture.md`](docs/architecture.md) for the phased roadma
 > This is offline batch processing for a **single stationary camera**. Ball detection, rink
 > mapping/heatmaps, and jersey-number identification are deferred — see the roadmap.
 
+## What works today (Phase 2)
+
+Validated on real ball hockey footage. Adds three capabilities on top of detection + tracking
+(`src/dbh_vibes/pipeline.py`):
+
+- **SigLIP team classification** (`team_siglip.py`) — appearance embeddings → UMAP → KMeans,
+  classifying each *track* once (not every frame, so it's CPU-affordable). Cleanly separates the
+  teams where the Phase 1 color split couldn't.
+- **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
+- **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
+  time-on-surface only accrues during real play.
+
+```bash
+pip install -e ".[phase2]"     # adds transformers + umap + scikit-learn
+python -m dbh_vibes data/game.mp4 --out runs/game --phase2
+```
+
+Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, and an enriched
+`tracks.csv` (`team`, `active_seconds`, `median_area_px`). Add `--no-siglip` to skip team
+classification for a faster run.
+
 ## Quickstart
 
 Requires Python 3.11.
