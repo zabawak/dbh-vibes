@@ -73,17 +73,43 @@ Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`
   are tagged `player`/`spectator` in `tracks.csv`; only players get teams and time totals.
 
 ### Still open in Phase 2
+- **Harden team clustering (highest priority).** The current SigLIP→UMAP→KMeans(k=2) team split
+  is **unstable run to run** (e.g., 18-vs-15 one run, 28-vs-6 the next). It is the weakest link
+  and undermines every team-level stat. Full analysis, root causes, and the plan to fix it are in
+  **[team-clustering.md](team-clustering.md)** — deferred to a dedicated session.
 - **Fine-tune a ball-hockey detector** for `ball`, `goalie`, `referee` classes (needs labeled
   clips; reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset) where it transfers).
 - **Calibrated top-down rink map** once camera intrinsics/keypoints are available (fisheye
   undistort + homography) → zone time, possession %, shots-on-net.
 
 ### Phase 3 — player identity + event attribution
-- **Jersey-number OCR + appearance re-ID** to stitch track ids across occlusions and line
-  changes into stable player identities → **true per-player time on surface, shift/line-change
-  detection, goals/assists**.
-- **Shift detection**: model the bench / entry-exit zones (a `supervision` line/polygon zone) so
-  a player crossing on/off the surface starts/stops a shift cleanly.
+
+**Constraint: no jersey numbers.** This is pickup ball hockey — players generally won't have
+readable numbers (no numbers at all, or too low-res / blurred / facing away to OCR). So the
+classic jersey-number-OCR path does **not** apply. Instead we identify players by **appearance**:
+each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone) that is
+**consistent within a single game**, even if it changes between games.
+
+- **Appearance-based re-identification.** Build a per-player appearance signature (a re-ID
+  embedding — e.g. OSNet/torchreid, or per-track aggregated SigLIP features) and cluster all
+  tracks in a game into ~roster-size identities. Each identity = the set of fragmented tracks
+  belonging to one person. This stitches the fragmented track ids (we saw ~100+ ids for ~13
+  people) into **stable per-player identities** → true per-player time-on-surface and shift
+  counts. Same embedding machinery as team clustering, but at finer (per-individual) granularity.
+- **How this differs from team clustering.** Team = coarse (2 groups by kit); identity = fine
+  (one cluster per person, using the *per-player* gear differences as the signal). Identity is
+  the harder, more valuable target.
+- **Known failure mode to document.** If two players wear near-identical gear, appearance alone
+  can't separate them — fall back on spatiotemporal continuity (motion/position across short
+  gaps) and, where it exists, any distinguishing cue. A real league with matching uniforms would
+  break this entirely and would need numbers or positional tracking; pickup with varied gear is
+  the favorable case.
+- **Other constraints to respect.** Appearance is consistent only *within* a game (re-build the
+  gallery per game); lighting drifts over a long game; players add/remove layers. Let roster size
+  be configurable or auto-determined from clustering quality.
+- **Shift detection.** Once identities are stable, model the bench / entry-exit zones (a
+  `supervision` line/polygon zone) so a player crossing on/off the surface starts/stops a shift
+  cleanly → line changes, goals/assists attribution.
 
 ### Phase 4 — scale & UX
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.
