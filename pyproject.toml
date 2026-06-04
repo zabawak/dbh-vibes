@@ -19,6 +19,11 @@ phase2 = [
     "umap-learn>=0.5.6",
     "scikit-learn>=1.5.0",
 ]
+# Test tooling. The segmentation tests are pure-stdlib and run without the heavy CV deps:
+#   pip install -e ".[dev]" && pytest
+dev = [
+    "pytest>=8.0",
+]
 
 [project.scripts]
 dbh-vibes = "dbh_vibes.cli:main"
@@ -29,3 +34,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

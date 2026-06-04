@@ -35,15 +35,20 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
 - **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
 - **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
   time-on-surface only accrues during real play.
+- **Auto-clip / dead-time skip** (`segments.py`) — collapses the active-play signal into
+  contiguous **live-play segments** (`segments.csv`), bridging brief gaps and dropping blips.
+  With `--clips`, also writes each segment as a raw clip under `<out>/clips/` — the basis for
+  shift detection and a big compute saving on a mostly-idle full game.
 
 ```bash
 pip install -e ".[phase2]"     # adds transformers + umap + scikit-learn
 python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
-Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, and an enriched
-`tracks.csv` (`team`, `active_seconds`, `median_area_px`). Add `--no-siglip` to skip team
-classification for a faster run.
+Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, an enriched
+`tracks.csv` (`team`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
+spans). Add `--no-siglip` to skip team classification for a faster run, or `--clips` to also
+export per-segment raw clips.
 
 ## Quickstart
 
