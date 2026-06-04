@@ -27,6 +27,13 @@ import supervision as sv
 from ultralytics import YOLO
 
 from dbh_vibes.activity import ActivitySummary, detect_activity, foot_points
+from dbh_vibes.segments import (
+    PlaySegment,
+    frame_segment_index,
+    segment_play,
+    total_live_seconds,
+    write_segments_csv,
+)
 from dbh_vibes.spatial import PositionHeatmap
 from dbh_vibes.surface import estimate_surface_mask, on_surface
 from dbh_vibes.team_siglip import SiglipTeamClassifier, assign_teams_by_track, crop_box
@@ -61,6 +68,7 @@ class Phase2Result:
     annotated_path: Path
     heatmap_path: Path
     csv_path: Path
+    segments_path: Path
     fps: float
     frame_count: int
     activity: ActivitySummary
@@ -69,6 +77,8 @@ class Phase2Result:
     n_players: int
     n_spectators: int
     surface_found: bool
+    segments: list[PlaySegment]
+    clips_dir: Path | None = None
 
 
 def run_phase2(
@@ -83,6 +93,7 @@ def run_phase2(
     min_track_frames: int = 15,
     min_player_area: float = 1500.0,
     crops_per_track: int = 6,
+    write_clips: bool = False,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
     source = Path(source)
@@ -93,6 +104,7 @@ def run_phase2(
     annotated_path = out_dir / "annotated.mp4"
     heatmap_path = out_dir / "heatmap.jpg"
     csv_path = out_dir / "tracks.csv"
+    segments_path = out_dir / "segments.csv"
 
     info = sv.VideoInfo.from_video_path(str(source))
     fps = float(info.fps)
@@ -160,6 +172,10 @@ def run_phase2(
             for tid, _ in boxes_this:
                 tracks[tid].active_frames += 1
 
+    # ---- Auto-clip: collapse the live/idle signal into live-play segments ----
+    segments = segment_play(activity.per_frame_active, fps)
+    write_segments_csv(segments_path, segments, fps)
+
     # ---- Team assignment (per track, majority vote) — players only ----
     if use_siglip_teams:
         player_crops = {t: track_crops[t] for t in players if track_crops.get(t)}
@@ -172,6 +188,19 @@ def run_phase2(
     # ---- Heatmap output ----
     cv2.imwrite(str(heatmap_path), heat.render(base_frame))
 
+    # ---- Auto-clip: per-segment raw clip writers (optional) ----
+    clips_dir: Path | None = None
+    clip_sinks: dict[int, sv.VideoSink] = {}
+    frame_seg = frame_segment_index(segments, frame_count) if write_clips else []
+    if write_clips and segments:
+        clips_dir = out_dir / "clips"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        for seg in segments:
+            sink = sv.VideoSink(target_path=str(clips_dir / f"segment_{seg.index:02d}.mp4"),
+                                video_info=info)
+            sink.__enter__()
+            clip_sinks[seg.index] = sink
+
     # ---- Pass B: render annotated video from buffered boxes ----
     with sv.VideoSink(target_path=str(annotated_path), video_info=info) as sink:
         cap = cv2.VideoCapture(str(source))
@@ -179,6 +208,9 @@ def run_phase2(
             ok, frame = cap.read()
             if not ok:
                 break
+            # Raw (un-annotated) frame goes to the clip for its segment, before we draw on it.
+            if write_clips and fi < len(frame_seg) and frame_seg[fi] is not None:
+                clip_sinks[frame_seg[fi]].write_frame(frame.copy())
             live = fi < len(activity.per_frame_active) and activity.per_frame_active[fi]
             for tid, box in frame_boxes[fi]:
                 ts = tracks[tid]
@@ -198,15 +230,18 @@ def run_phase2(
             cv2.putText(frame, banner, (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, bcolor, 2)
             sink.write_frame(frame)
         cap.release()
+    for s in clip_sinks.values():
+        s.__exit__(None, None, None)
 
     # ---- Stats output ----
     team_seconds = _write_csv(csv_path, tracks, players, fps)
 
     return Phase2Result(
         annotated_path=annotated_path, heatmap_path=heatmap_path, csv_path=csv_path,
-        fps=fps, frame_count=frame_count, activity=activity, tracks=tracks,
-        team_seconds=team_seconds, n_players=len(players),
+        segments_path=segments_path, fps=fps, frame_count=frame_count, activity=activity,
+        tracks=tracks, team_seconds=team_seconds, n_players=len(players),
         n_spectators=len(tracks) - len(players), surface_found=surface is not None,
+        segments=segments, clips_dir=clips_dir,
     )
 
 

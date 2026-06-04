@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="With --phase2, don't filter out off-court spectators/bench by playing surface.",
     )
+    parser.add_argument(
+        "--clips",
+        action="store_true",
+        help="With --phase2, also write each live-play segment as a raw clip to <out>/clips/.",
+    )
     return parser
 
 
@@ -104,6 +109,7 @@ def _run_phase2(args) -> int:
             tracker=args.tracker,
             use_siglip_teams=not args.no_siglip,
             filter_to_surface=not args.no_surface_filter,
+            write_clips=args.clips,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -117,12 +123,18 @@ def _run_phase2(args) -> int:
           f"{result.n_players} players, {result.n_spectators} spectators/bench (filtered out)")
     print(f"Active play: {a.active_fraction*100:.0f}% of frames "
           f"(mean {a.mean_players:.1f} on-surface players/frame, spread {a.mean_spread:.3f})")
+    from dbh_vibes.segments import total_live_seconds
+    live_s = total_live_seconds(result.segments, result.fps)
+    print(f"Live-play segments: {len(result.segments)} ({live_s:.0f}s of live play total)")
     if result.team_seconds:
         for team, secs in sorted(result.team_seconds.items()):
             print(f"  Team {team}: {secs:.0f} active player-seconds")
     print(f"Annotated video: {result.annotated_path}")
     print(f"Position heatmap: {result.heatmap_path}")
     print(f"Track summary:   {result.csv_path}")
+    print(f"Play segments:   {result.segments_path}")
+    if result.clips_dir is not None:
+        print(f"Live-play clips: {result.clips_dir}")
     return 0
 
 

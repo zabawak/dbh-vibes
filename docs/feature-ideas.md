@@ -11,7 +11,7 @@ depends on*. See [architecture.md](architecture.md) for the phased roadmap and
 ## Dependency map (what unlocks what)
 
 ```
-detection+tracking (done) ─┬─ activity gating (done) ── auto-clip / shift segmentation
+detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation
                            ├─ surface filter (done) ─── zone stats (needs homography)
                            ├─ team clustering (fragile) ─ team-level stats
                            ├─ appearance re-ID (Phase 3) ─ per-player stats, +/-, shifts
@@ -23,9 +23,10 @@ detection** and/or **homography**.
 
 ## Quick wins (cheap, high leverage)
 
-- **Auto-clip / dead-time skip.** Use the existing `activity.py` signal to auto-split a full game
-  into live-play segments and process only those — big compute savings and the basis for shift
-  detection. *Low difficulty; depends on: done pieces.*
+- **Auto-clip / dead-time skip** *(done — `segments.py`).* Collapses the `activity.py` signal into
+  contiguous live-play segments (`segments.csv`), bridging brief gaps and dropping blips; `--clips`
+  exports each segment as a raw clip. Big compute savings on a mostly-idle full game and the
+  scaffolding for shift detection. *Was: Low difficulty; depended on done pieces.*
 - **Human-in-the-loop identity.** Given no jersey numbers, a tiny labeling step beats perfect
   automation: show one crop per track cluster, let the user tag "that's player A / team X," then
   propagate. Turns a hard CV problem into a 2-minute review. *Low–medium; pairs with Phase 3.*
