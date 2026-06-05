@@ -49,16 +49,17 @@ python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
 Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`, an enriched
-`tracks.csv` (adds `team`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
+`tracks.csv` (adds `team`, `team_conf`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
 spans; `--clips` also exports per-segment raw clips). Pipeline lives in
 `src/dbh_vibes/pipeline.py` (two-pass: detect/track once → fit teams + activity + segments → render).
 
 - **SigLIP team classification** (`team_siglip.py`) — embeds player crops with the SigLIP vision
-  tower, reduces with UMAP, clusters with KMeans, mirroring roboflow/sports. Replaces the MVP
-  torso-color split, which collapsed on real footage. Classified **per track** (majority vote over
-  a few sampled crops), so a clip costs a few hundred embeds, not tens of thousands — practical
-  even on CPU (~2 min/clip). Validated: cleanly isolates the red-pinnie team with zero
-  contamination.
+  tower, then clusters appearance into two teams. Replaces the MVP torso-color split, which
+  collapsed on real footage. Classified **per track** (one mean embedding per player), so a clip
+  costs a few hundred embeds, not tens of thousands — practical even on CPU (~2 min/clip). The
+  clusterer was hardened to fix run-to-run instability: deterministic PCA (not UMAP), over-segment
+  then merge by size (goalies/refs can't form a team), and colour-anchored stable labels — see
+  [team-clustering.md](team-clustering.md).
 - **Position heatmap** (`spatial.py`) — accumulates foot-point density into a colored overlay.
   Kept in **image space**: a single planar homography to a top-down view is unreliable on this
   fixed fisheye with the near boards occluded, so an honest image-space map is the base for a
@@ -88,10 +89,15 @@ spans; `--clips` also exports per-segment raw clips). Pipeline lives in
   are tagged `player`/`spectator` in `tracks.csv`; only players get teams and time totals.
 
 ### Still open in Phase 2
-- **Harden team clustering (highest priority).** The current SigLIP→UMAP→KMeans(k=2) team split
-  is **unstable run to run** (e.g., 18-vs-15 one run, 28-vs-6 the next). It is the weakest link
-  and undermines every team-level stat. Full analysis, root causes, and the plan to fix it are in
-  **[team-clustering.md](team-clustering.md)** — deferred to a dedicated session.
+- **Harden team clustering — algorithm reworked, real-footage re-validation pending.** The old
+  SigLIP→UMAP→KMeans(k=2) team split was **unstable run to run** (e.g., 18-vs-15 one run, 28-vs-6
+  the next). It has been reworked to cluster **per track** (mean embedding, one vote per player),
+  reduce with **deterministic PCA** (no UMAP), **over-segment then merge by size** so goalies/refs
+  fold into a team instead of *becoming* one, and anchor **stable T0/T1 labels** to kit colour —
+  plus a label-free quality signal (silhouette, balance, per-track `team_conf`). The new logic is
+  unit-tested on synthetic embeddings (`tests/test_team_cluster.py`); it still needs an end-to-end
+  re-run on the real clip and a small labeled set to measure accuracy. Full write-up in
+  **[team-clustering.md](team-clustering.md)**.
 - **Fine-tune a ball-hockey detector** for `ball`, `goalie`, `referee` classes (needs labeled
   clips; reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset) where it transfers).
 - **Calibrated top-down rink map** once camera intrinsics/keypoints are available (fisheye

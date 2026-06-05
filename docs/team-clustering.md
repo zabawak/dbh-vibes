@@ -1,7 +1,10 @@
 # Team Clustering — Robustness Needs
 
-Status: **known-fragile, deferred to a future session.** This note captures what we observed and
-the concrete ideas to harden it, so we can pick it up cold.
+Status: **hardened (algorithm), pending real-footage re-validation.** The clusterer has been
+reworked to remove the instability described below; the new logic is unit-tested on synthetic
+embeddings (`tests/test_team_cluster.py`). It has **not yet been re-run on the real gameplay clip**
+(that needs the video + SigLIP weights, which aren't in this environment) — see *What changed* and
+*Still to validate* at the bottom. The original analysis is kept for context.
 
 ## The problem we saw
 
@@ -54,11 +57,40 @@ red-pinnie team), but it is not *reliable*.
 - **Temporal lock.** A track's team is constant; enforce it (already majority-voted, but make the
   *fit* per-track too).
 
-## What we need to actually validate it
+## What changed (the hardening, all label-free)
 
+Implemented in `src/dbh_vibes/team_siglip.py`; each item maps to a root cause above:
+
+1. **Cluster per track, not per crop** (root cause #3). `aggregate_track_embeddings` pools each
+   track's L2-normalised crop embeddings into one mean vector, so we cluster ~one point per player.
+   Unit-tested to be invariant to how many crops a track contributed (1 vs 50 → same embedding).
+2. **Deterministic reduction** (root cause #3). UMAP (stochastic, version-sensitive, noisy on a few
+   dozen points) is replaced by exact PCA (`svd_solver='full'`) with fixed seeds and a fixed track
+   order, so identical crops give identical teams every run. This also **drops the `umap-learn`
+   dependency** (`pyproject.toml` `phase2` extras).
+3. **Over-segment then merge by size** (root causes #1, #2 — the degenerate split). We cluster into
+   K∈[2,4] micro-clusters, pick K by silhouette (biased toward smaller K so two genuine teams stay
+   K=2), then take the **two largest** micro-clusters as team anchors and fold every smaller outlier
+   (goalies, refs) into the nearest anchor by appearance. A small, visually distinct goalie cluster
+   can no longer *become* a team — the regression test reproduces the 28-vs-6 scenario (20 skaters +
+   2 distinct goalies) and confirms the skaters now split 10/10 with the goalies folded in.
+4. **Colour-anchored stable labels** (root cause #5). `order_labels_by_color` assigns T0/T1 by kit
+   colour — the more saturated (e.g. pinnie) team is T0 — so labels don't flip between runs even
+   when the sampled crop set shifts.
+5. **Label-free quality signal** (root cause #6, partial). Clustering returns a silhouette score,
+   team-balance counts, micro-cluster count, and a per-track confidence margin (surfaced as the
+   `team_conf` column in `tracks.csv` and printed by the CLI), so separation and run-to-run
+   stability can be *measured* without ground truth.
+
+Goalies are still merged by *appearance*, not the spatial cue the analysis preferred — they no
+longer tip the split, but a goalie whose gear resembles team A's will fold into team A. Spatial
+goalie handling (near-net position) remains a follow-up once positions are plumbed through.
+
+## Still to validate (needs real footage / a labeled set)
+
+- **Re-run on the gameplay clip** end-to-end with SigLIP and confirm the split is balanced and
+  stable across repeated runs (the failure table above should no longer reproduce).
 - **A small labeled set**: hand-label team for ~20–40 tracks across 2–3 clips (and a couple of
-  different camera setups). Without this we can't measure or tune.
-- **Metrics**: clustering accuracy vs labels; team-balance sanity (counts within reason);
-  run-to-run stability (same clip, repeated runs, should agree).
+  different camera setups) to measure *accuracy*, not just internal separation.
 - **Robustness checks**: different lighting, a clip where both teams wear similar colors (expected
-  failure case — document it), and the goalie-heavy frames that tipped this run.
+  failure case — document it), and the goalie-heavy frames that tipped the original run.

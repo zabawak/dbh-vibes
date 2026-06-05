@@ -13,7 +13,7 @@ depends on*. See [architecture.md](architecture.md) for the phased roadmap and
 ```
 detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation
                            ├─ surface filter (done) ─── zone stats (needs homography)
-                           ├─ team clustering (fragile) ─ team-level stats
+                           ├─ team clustering (hardened) ─ team-level stats
                            ├─ appearance re-ID (Phase 3) ─ per-player stats, +/-, shifts
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones

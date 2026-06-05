@@ -12,11 +12,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Phase 2 SigLIP team classification. Heavy (transformers + umap); install with:
+# Phase 2 SigLIP team classification. Heavy (transformers); install with:
 #   pip install -e ".[phase2]"
+# Clustering is deterministic PCA + KMeans (scikit-learn); no UMAP — see docs/team-clustering.md.
 phase2 = [
     "transformers>=4.45.0",
-    "umap-learn>=0.5.6",
     "scikit-learn>=1.5.0",
 ]
 # Test tooling. The segmentation tests are pure-stdlib and run without the heavy CV deps:

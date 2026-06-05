@@ -1,43 +1,74 @@
-"""SigLIP-embedding team classifier (Phase 2).
+"""SigLIP-embedding team clustering (Phase 2, hardened).
 
-This is the upgrade from the MVP's torso-color KMeans, which collapsed on real footage
-(dark-vs-white jerseys plus bench/spectator clothing all landed in one cluster). It mirrors the
-roboflow/sports approach: embed each player crop with the SigLIP vision tower, reduce with UMAP,
-and cluster into two teams with KMeans. Appearance embeddings separate kits far more robustly
-than mean color.
+The upgrade from the MVP torso-color KMeans, which collapsed on real footage. We embed each
+player crop with the SigLIP vision tower and cluster appearance into two teams. Appearance
+embeddings separate kits far more robustly than mean color.
+
+This module is the hardening of that clusterer. The earlier version (per-crop SigLIP -> UMAP ->
+KMeans(k=2)) was *unstable run to run* (e.g. an 18-vs-15 split one run, a degenerate 28-vs-6 the
+next) — see docs/team-clustering.md. The instability had concrete causes, each addressed here and
+**all without any labelled data**:
+
+1. Clustering per *crop* made the result sensitive to how many/which crops each track contributed
+   and to motion blur. -> We aggregate each track into one mean embedding and cluster *tracks*:
+   one vote per player (`aggregate_track_embeddings`).
+2. UMAP is stochastic across versions and noisy on the few dozen points we have. -> We reduce with
+   PCA, which is deterministic, and fix every seed and the track ordering, so the same crops give
+   identical teams every run (`_reduce`). This also drops the `umap-learn` dependency.
+3. Forcing exactly two clusters onto 3+ visual groups (two kits + goalies + the odd ref) let a
+   handful of edge tracks tip the boundary into a degenerate split. -> We *over-segment* into K>=2
+   micro-clusters (K chosen by silhouette) and then merge **by size**: the two largest groups are
+   the team anchors, and every smaller outlier (goalies, refs) folds into the nearest anchor by
+   appearance. A goalie cluster can no longer *become* a team (`cluster_team_embeddings`).
+4. KMeans labels are arbitrary and flip between runs, so the same team was T0 one run and T1 the
+   next. -> We anchor T0/T1 to a physical, run-invariant signal — kit colour — so the more
+   saturated (e.g. pinnie) team is consistently T0 (`order_labels_by_color`).
+5. We have no ground truth, so we cannot tune by accuracy. -> Clustering returns a label-free
+   quality signal (silhouette, team balance, per-track confidence margin) so separation and
+   run-to-run stability can be *measured* rather than eyeballed (`ClusterInfo`, `team_confidence`).
 
 Efficiency note: SigLIP on CPU is ~240ms/crop, far too slow to embed every detection in every
-frame. We lean on the tracker instead — a track's team is constant, so we embed only a handful
-of crops per track id and majority-vote (see assign_teams_by_track). That turns tens of
-thousands of embeds into a few hundred for a whole clip.
+frame. We lean on the tracker — a track's team is constant — so we embed only a handful of crops
+per track id and pool them. That turns tens of thousands of embeds into a few hundred per clip.
+
+The clustering core (`aggregate_track_embeddings`, `cluster_team_embeddings`,
+`order_labels_by_color`, `team_confidence`) operates on plain numpy embedding matrices, with no
+torch/transformers dependency, so it is unit-testable on synthetic embeddings without any video.
 """
 
 from __future__ import annotations
 
 import warnings
-from collections import defaultdict
+from dataclasses import dataclass, field
 
 import numpy as np
 
 warnings.filterwarnings("ignore")
 
+EMBED_DIM = 768
+
+
+# --------------------------------------------------------------------------------------------
+# SigLIP embedder (the only torch/transformers-dependent piece)
+# --------------------------------------------------------------------------------------------
 
 class SiglipTeamClassifier:
-    """Cluster player crops into two teams via SigLIP embeddings -> UMAP -> KMeans."""
+    """Embed player crops with the SigLIP vision tower.
+
+    Despite the historical name this is now purely an *embedder*: the clustering lives in the pure
+    functions below so it can be tested and reasoned about without the heavy model. Kept as a class
+    so the model is loaded once and reused across the crops of a clip.
+    """
 
     def __init__(
         self,
         model_name: str = "google/siglip-base-patch16-224",
         batch_size: int = 16,
-        n_components: int = 3,
-        n_clusters: int = 2,
         device: str = "cpu",
     ) -> None:
-        # Heavy imports are local so importing this module stays cheap and the color fallback
-        # has no transformers/umap dependency.
+        # Heavy imports are local so importing this module stays cheap and the pure clustering
+        # core (and its tests) need no transformers dependency.
         import torch
-        import umap
-        from sklearn.cluster import KMeans
         from transformers import AutoImageProcessor, SiglipVisionModel
 
         self._torch = torch
@@ -48,16 +79,12 @@ class SiglipTeamClassifier:
         self.model = SiglipVisionModel.from_pretrained(model_name).eval().to(device)
         torch.set_num_threads(4)
 
-        self.reducer = umap.UMAP(n_components=n_components, random_state=42)
-        self.kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
-        self._fitted = False
-
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
         """Embed BGR crops (as from OpenCV) into SigLIP feature vectors."""
         from PIL import Image
 
         if not crops:
-            return np.empty((0, 768), dtype=np.float32)
+            return np.empty((0, EMBED_DIM), dtype=np.float32)
 
         pil = [Image.fromarray(c[:, :, ::-1]) for c in crops]  # BGR -> RGB
         feats = []
@@ -69,55 +96,294 @@ class SiglipTeamClassifier:
                 feats.append(out.cpu().numpy())
         return np.concatenate(feats, axis=0)
 
-    def fit(self, crops: list[np.ndarray]) -> "SiglipTeamClassifier":
-        """Fit the UMAP+KMeans team model on a representative set of player crops."""
-        emb = self.embed(crops)
-        reduced = self.reducer.fit_transform(emb)
-        self.kmeans.fit(reduced)
-        self._fitted = True
-        return self
 
-    def predict(self, crops: list[np.ndarray]) -> np.ndarray:
-        """Return a team id (0/1) per crop. Must call fit() first."""
-        if not self._fitted:
-            raise RuntimeError("SiglipTeamClassifier.predict called before fit()")
-        if not crops:
-            return np.empty((0,), dtype=int)
-        reduced = self.reducer.transform(self.embed(crops))
-        return self.kmeans.predict(reduced).astype(int)
+# --------------------------------------------------------------------------------------------
+# Pure clustering core (numpy/sklearn only — no torch, no video)
+# --------------------------------------------------------------------------------------------
 
+@dataclass
+class ClusterInfo:
+    """Label-free quality signal for a team clustering, so we can measure rather than eyeball.
 
-def assign_teams_by_track(
-    classifier: SiglipTeamClassifier,
-    track_crops: dict[int, list[np.ndarray]],
-) -> dict[int, int]:
-    """Assign one team id per track id by majority vote over that track's sampled crops.
-
-    Args:
-        classifier: a fitted SiglipTeamClassifier.
-        track_crops: track_id -> list of sampled BGR crops for that track.
-
-    Returns:
-        track_id -> team id (0/1).
+    silhouette: separation of the final two-team labelling in reduced space ([-1, 1]; higher is
+        cleaner). Computed on the *track* points, so it is comparable run to run on the same clip.
+    team_sizes: (n_team0, n_team1) track counts — a balance sanity check (a wildly lopsided split
+        is the classic failure mode).
+    n_micro: how many micro-clusters were used before merging to two (>2 means outlier groups such
+        as goalies were peeled off rather than allowed to tip the split).
     """
-    # Flatten to a single batch so we pay the embedding cost once, then scatter back.
+
+    silhouette: float
+    team_sizes: tuple[int, int]
+    n_micro: int
+    reduced: np.ndarray = field(repr=False, default_factory=lambda: np.empty((0, 0)))
+    centroids: np.ndarray = field(repr=False, default_factory=lambda: np.empty((0, 0)))
+
+
+def _l2norm(x: np.ndarray, axis: int = -1, eps: float = 1e-8) -> np.ndarray:
+    return x / (np.linalg.norm(x, axis=axis, keepdims=True) + eps)
+
+
+def aggregate_track_embeddings(
+    crop_embeddings: np.ndarray, owners: list[int], track_ids: list[int]
+) -> np.ndarray:
+    """Pool per-crop embeddings into one mean embedding per track, in `track_ids` order.
+
+    Each crop embedding is L2-normalised before averaging so a few high-magnitude crops can't
+    dominate a track, and the per-track mean is renormalised. Clustering tracks (not crops) is what
+    makes the result insensitive to how many crops each player happened to contribute.
+    """
+    if len(track_ids) == 0:
+        return np.empty((0, crop_embeddings.shape[1] if crop_embeddings.ndim == 2 else EMBED_DIM))
+    normed = _l2norm(crop_embeddings.astype(np.float64))
+    owners_arr = np.asarray(owners)
+    rows = []
+    for tid in track_ids:
+        mask = owners_arr == tid
+        if not mask.any():
+            rows.append(np.zeros(normed.shape[1]))
+        else:
+            rows.append(normed[mask].mean(axis=0))
+    return _l2norm(np.vstack(rows))
+
+
+def _reduce(track_emb: np.ndarray, n_components: int, random_state: int) -> np.ndarray:
+    """Deterministic PCA denoise + L2-normalise. Returns the track points in reduced space."""
+    from sklearn.decomposition import PCA
+
+    n, d = track_emb.shape
+    k = max(1, min(n_components, n - 1, d))
+    # svd_solver='full' is exact/deterministic (n is tiny, so this is cheap) — no randomised SVD,
+    # so the reduction does not wobble between runs the way UMAP did.
+    reduced = PCA(n_components=k, svd_solver="full", random_state=random_state).fit_transform(
+        track_emb
+    )
+    return _l2norm(reduced)
+
+
+def _merge_micro_to_two(reduced: np.ndarray, micro_labels: np.ndarray) -> np.ndarray:
+    """Merge K>=2 micro-clusters into two teams, size-first.
+
+    The two *largest* micro-clusters are the team anchors (the skater groups); every smaller
+    outlier cluster (goalies, refs, boards-huggers) folds into whichever anchor its centroid is
+    most cosine-similar to. This is the fix for the degenerate split: a small, visually distinct
+    goalie cluster attaches to a team instead of being allowed to *become* one.
+    """
+    micro_ids, counts = np.unique(micro_labels, return_counts=True)
+    centroids = _l2norm(
+        np.vstack([reduced[micro_labels == m].mean(axis=0) for m in micro_ids])
+    )
+    # Anchors: the two biggest micro-clusters (ties broken by lower micro id for determinism).
+    order = sorted(range(len(micro_ids)), key=lambda i: (-counts[i], micro_ids[i]))
+    anchor_a, anchor_b = order[0], order[1]
+
+    team_of_micro: dict[int, int] = {}
+    for i, m in enumerate(micro_ids):
+        if i == anchor_a:
+            team_of_micro[m] = 0
+        elif i == anchor_b:
+            team_of_micro[m] = 1
+        else:
+            sim_a = float(centroids[i] @ centroids[anchor_a])
+            sim_b = float(centroids[i] @ centroids[anchor_b])
+            team_of_micro[m] = 0 if sim_a >= sim_b else 1
+    return np.array([team_of_micro[m] for m in micro_labels], dtype=int)
+
+
+def cluster_team_embeddings(
+    track_emb: np.ndarray,
+    *,
+    max_micro: int = 4,
+    n_components: int = 16,
+    random_state: int = 42,
+    silhouette_margin: float = 0.03,
+) -> tuple[np.ndarray, ClusterInfo]:
+    """Cluster per-track embeddings into two teams. Returns (labels, ClusterInfo).
+
+    Pipeline: deterministic PCA -> choose K in [2, max_micro] micro-clusters by silhouette
+    (preferring smaller K unless a larger one is clearly cleaner) -> merge to two teams by size.
+    Fully deterministic given the input row order, so repeated runs on the same crops are identical.
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
+
+    n = len(track_emb)
+    if n == 0:
+        return np.empty((0,), dtype=int), ClusterInfo(0.0, (0, 0), 0)
+    if n == 1:
+        return np.zeros(1, dtype=int), ClusterInfo(0.0, (1, 0), 1)
+    if n == 2:
+        labels = np.array([0, 1], dtype=int)
+        return labels, ClusterInfo(0.0, (1, 1), 2)
+
+    reduced = _reduce(track_emb, n_components, random_state)
+
+    # Over-segment: try K micro-clusters and keep the cleanest by silhouette, biased toward the
+    # smallest K (so two genuine teams stay K=2 and we only peel outliers off when it clearly helps).
+    best_k, best_labels, best_sil = 2, None, -1.0
+    for k in range(2, min(max_micro, n - 1) + 1):
+        km = KMeans(n_clusters=k, n_init=10, random_state=random_state)
+        labels_k = km.fit_predict(reduced)
+        if len(np.unique(labels_k)) < k:  # degenerate (empty cluster) — skip
+            continue
+        sil = float(silhouette_score(reduced, labels_k))
+        if best_labels is None or sil > best_sil + silhouette_margin:
+            best_k, best_labels, best_sil = k, labels_k, sil
+    if best_labels is None:  # silhouette never computable — fall back to a plain 2-way split
+        best_labels = KMeans(n_clusters=2, n_init=10, random_state=random_state).fit_predict(reduced)
+        best_k = 2
+
+    labels = _merge_micro_to_two(reduced, best_labels)
+
+    # Quality of the *final* two-team labelling (what downstream stats actually use).
+    if len(np.unique(labels)) == 2:
+        final_sil = float(silhouette_score(reduced, labels))
+        centroids = _l2norm(np.vstack([reduced[labels == t].mean(axis=0) for t in (0, 1)]))
+    else:
+        final_sil = 0.0
+        centroids = _l2norm(reduced.mean(axis=0, keepdims=True))
+    sizes = (int((labels == 0).sum()), int((labels == 1).sum()))
+    return labels, ClusterInfo(final_sil, sizes, best_k, reduced, centroids)
+
+
+def team_confidence(info: ClusterInfo, labels: np.ndarray) -> np.ndarray:
+    """Per-track confidence in [0, 1]: how much closer a track is to its team than the other.
+
+    Margin = (cos to own centroid - cos to other centroid) mapped from [-2, 2] to [0, 1]. Low
+    values flag borderline tracks (blurry crops, ambiguous kit) without needing any labels.
+    """
+    if info.centroids.shape[0] < 2 or len(labels) == 0:
+        return np.full(len(labels), 0.5)
+    sim0 = info.reduced @ info.centroids[0]
+    sim1 = info.reduced @ info.centroids[1]
+    own = np.where(labels == 0, sim0, sim1)
+    other = np.where(labels == 0, sim1, sim0)
+    return np.clip((own - other + 2.0) / 4.0, 0.0, 1.0)
+
+
+# --------------------------------------------------------------------------------------------
+# Stable team labels from kit colour (anchors T0/T1 to something physical)
+# --------------------------------------------------------------------------------------------
+
+def torso_color_hsv(crop: np.ndarray) -> np.ndarray:
+    """Mean HSV of a crop's torso region (upper-centre), where the kit colour is clearest.
+
+    Returns [hue (0-179), saturation (0-255), value (0-255)]. The torso window avoids the head and
+    legs/floor, which carry less kit signal. Pure numpy so it needs no OpenCV.
+    """
+    h, w = crop.shape[:2]
+    if h < 4 or w < 4:
+        region = crop
+    else:
+        region = crop[int(0.15 * h) : int(0.55 * h), int(0.2 * w) : int(0.8 * w)]
+        if region.size == 0:
+            region = crop
+    return _bgr_to_hsv_mean(region)
+
+
+def _bgr_to_hsv_mean(region: np.ndarray) -> np.ndarray:
+    """Mean HSV (OpenCV ranges: H 0-179, S/V 0-255) of a BGR region, without an OpenCV dependency."""
+    bgr = region.reshape(-1, 3).astype(np.float64) / 255.0
+    b, g, r = bgr[:, 0], bgr[:, 1], bgr[:, 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    diff = mx - mn
+    val = mx
+    sat = np.where(mx > 1e-8, diff / (mx + 1e-8), 0.0)
+    hue = np.zeros_like(mx)
+    nz = diff > 1e-8
+    # Standard piecewise hue, in degrees [0, 360).
+    rmax = nz & (mx == r)
+    gmax = nz & (mx == g) & ~rmax
+    bmax = nz & (mx == b) & ~rmax & ~gmax
+    hue[rmax] = (60 * ((g[rmax] - b[rmax]) / diff[rmax]) + 360) % 360
+    hue[gmax] = 60 * ((b[gmax] - r[gmax]) / diff[gmax]) + 120
+    hue[bmax] = 60 * ((r[bmax] - g[bmax]) / diff[bmax]) + 240
+    return np.array([hue.mean() / 2.0, sat.mean() * 255.0, val.mean() * 255.0])
+
+
+def order_labels_by_color(
+    labels: np.ndarray, colors: np.ndarray
+) -> dict[int, int]:
+    """Return a {raw_label -> stable_team} remap anchoring T0 to the more saturated (e.g. pinnie) kit.
+
+    KMeans cluster ids are arbitrary and the sampled crop set shifts run to run, so the raw label
+    of a team is not stable. We anchor it to a physical signal: the team whose tracks have the
+    higher median saturation becomes T0 (ties broken by brightness, then hue). With two kits where
+    one is a coloured pinnie and the other plain, T0 is consistently the pinnie team across runs.
+    """
+    uniq = sorted(set(int(x) for x in labels))
+    if len(uniq) < 2:
+        return {lab: 0 for lab in uniq}
+
+    def key(lab: int) -> tuple[float, float, float]:
+        sel = colors[labels == lab]
+        med = np.median(sel, axis=0)  # [hue, sat, val]
+        # Sort descending by saturation, then brightness, then hue -> negate for ascending sort.
+        return (-med[1], -med[2], med[0])
+
+    ranked = sorted(uniq, key=key)
+    return {lab: team for team, lab in enumerate(ranked)}
+
+
+# --------------------------------------------------------------------------------------------
+# Orchestration: crops -> per-track team assignment (used by the pipeline)
+# --------------------------------------------------------------------------------------------
+
+@dataclass
+class TeamAssignment:
+    track_team: dict[int, int]              # track_id -> stable team id (0/1)
+    track_conf: dict[int, float]            # track_id -> confidence in [0, 1]
+    info: ClusterInfo
+
+    @property
+    def team_sizes(self) -> tuple[int, int]:
+        return self.info.team_sizes
+
+    @property
+    def silhouette(self) -> float:
+        return self.info.silhouette
+
+
+def assign_teams(
+    embedder: SiglipTeamClassifier,
+    track_crops: dict[int, list[np.ndarray]],
+) -> TeamAssignment:
+    """Assign one stable team id per track from its sampled crops.
+
+    Steps (all label-free): embed crops once -> pool to one embedding per track -> cluster tracks
+    into two teams (over-segment + size-merge) -> anchor T0/T1 to kit colour -> report confidence.
+    """
+    track_ids = sorted(track_crops)
     flat_crops: list[np.ndarray] = []
     owners: list[int] = []
-    for track_id, crops in track_crops.items():
+    colors_per_track: list[np.ndarray] = []
+    for tid in track_ids:
+        crops = track_crops[tid]
+        if not crops:
+            continue
         for crop in crops:
             flat_crops.append(crop)
-            owners.append(track_id)
+            owners.append(tid)
+        colors_per_track.append(np.median([torso_color_hsv(c) for c in crops], axis=0))
 
+    present_ids = [t for t in track_ids if track_crops.get(t)]
     if not flat_crops:
-        return {}
+        return TeamAssignment({}, {}, ClusterInfo(0.0, (0, 0), 0))
 
-    preds = classifier.predict(flat_crops)
+    crop_emb = embedder.embed(flat_crops)
+    track_emb = aggregate_track_embeddings(crop_emb, owners, present_ids)
+    labels, info = cluster_team_embeddings(track_emb)
+    conf = team_confidence(info, labels)
 
-    votes: dict[int, list[int]] = defaultdict(list)
-    for track_id, team in zip(owners, preds):
-        votes[track_id].append(int(team))
+    remap = order_labels_by_color(labels, np.vstack(colors_per_track))
+    stable = np.array([remap[int(l)] for l in labels], dtype=int)
+    # Re-derive sizes/silhouette stay valid under the relabel (it's just a permutation of 0/1).
+    info.team_sizes = (int((stable == 0).sum()), int((stable == 1).sum()))
 
-    return {tid: int(round(np.mean(v))) for tid, v in votes.items()}
+    track_team = {tid: int(stable[i]) for i, tid in enumerate(present_ids)}
+    track_conf = {tid: float(conf[i]) for i, tid in enumerate(present_ids)}
+    return TeamAssignment(track_team, track_conf, info)
 
 
 def crop_box(frame: np.ndarray, box_xyxy: np.ndarray, pad: float = 0.0) -> np.ndarray | None:

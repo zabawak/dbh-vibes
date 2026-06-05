@@ -29,9 +29,11 @@ tooling, [`docs/architecture.md`](docs/architecture.md) for the phased roadmap, 
 Validated on real ball hockey footage. Adds three capabilities on top of detection + tracking
 (`src/dbh_vibes/pipeline.py`):
 
-- **SigLIP team classification** (`team_siglip.py`) — appearance embeddings → UMAP → KMeans,
-  classifying each *track* once (not every frame, so it's CPU-affordable). Cleanly separates the
-  teams where the Phase 1 color split couldn't.
+- **SigLIP team classification** (`team_siglip.py`) — appearance embeddings clustered **per
+  track** (one mean embedding per player, not per frame, so it's CPU-affordable) into two teams.
+  Separates the teams where the Phase 1 color split couldn't. Hardened against run-to-run
+  instability: deterministic PCA (no UMAP), over-segment-then-merge so goalies/refs can't form a
+  team, and colour-anchored stable labels — details in [`docs/team-clustering.md`](docs/team-clustering.md).
 - **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
 - **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
   time-on-surface only accrues during real play.
@@ -41,12 +43,12 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
   shift detection and a big compute saving on a mostly-idle full game.
 
 ```bash
-pip install -e ".[phase2]"     # adds transformers + umap + scikit-learn
+pip install -e ".[phase2]"     # adds transformers + scikit-learn
 python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
 Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, an enriched
-`tracks.csv` (`team`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
+`tracks.csv` (`team`, `team_conf`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
 spans). Add `--no-siglip` to skip team classification for a faster run, or `--clips` to also
 export per-segment raw clips.
 
