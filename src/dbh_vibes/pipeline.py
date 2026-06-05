@@ -97,6 +97,7 @@ class Phase2Result:
     segments: list[PlaySegment]
     clips_dir: Path | None = None
     team_quality: TeamQuality | None = None
+    labels_path: Path | None = None
 
 
 def run_phase2(
@@ -112,6 +113,7 @@ def run_phase2(
     min_player_area: float = 1500.0,
     crops_per_track: int = 6,
     write_clips: bool = False,
+    export_labels: bool = False,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
     source = Path(source)
@@ -211,6 +213,28 @@ def run_phase2(
                 method=assignment.info.method,
             )
 
+    # ---- Labeling set (optional): per-track crop montages + a labels.csv template ----
+    # Same detect/track pass that writes tracks.csv, so the labels line up with the predictions by
+    # track id and can be scored directly (see evaluate.py / docs priority #1).
+    labels_path: Path | None = None
+    if export_labels:
+        from dbh_vibes.labeling import export_labeling_set
+
+        order = sorted(players, key=lambda t: tracks[t].active_frames, reverse=True)
+        track_rows = {
+            tid: {
+                "pred_team": tracks[tid].team if tracks[tid].team is not None else "",
+                "pred_role": "player",
+                "frames_seen": tracks[tid].frames_seen,
+                "seconds_on_surface": round(tracks[tid].frames_seen / fps, 2) if fps else 0.0,
+                "median_area_px": int(np.median(tracks[tid].areas)) if tracks[tid].areas else 0,
+            }
+            for tid in order
+        }
+        _, labels_path, _ = export_labeling_set(
+            out_dir, {t: track_crops.get(t, []) for t in order}, track_rows, order=order
+        )
+
     # ---- Heatmap output ----
     cv2.imwrite(str(heatmap_path), heat.render(base_frame))
 
@@ -268,6 +292,7 @@ def run_phase2(
         tracks=tracks, team_seconds=team_seconds, n_players=len(players),
         n_spectators=len(tracks) - len(players), surface_found=surface is not None,
         segments=segments, clips_dir=clips_dir, team_quality=team_quality,
+        labels_path=labels_path,
     )
 
 

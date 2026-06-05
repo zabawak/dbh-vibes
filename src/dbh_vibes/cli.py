@@ -16,7 +16,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="dbh_vibes",
         description="Detect and track ball hockey players in a single-camera clip.",
     )
-    parser.add_argument("video", help="Path to the input video (e.g. data/sample.mp4)")
+    parser.add_argument(
+        "video", nargs="?",
+        help="Path to the input video (e.g. data/sample.mp4). Optional with --evaluate.",
+    )
     parser.add_argument(
         "--out", default="runs/output", help="Output directory (default: runs/output)"
     )
@@ -58,6 +61,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--clips",
         action="store_true",
         help="With --phase2, also write each live-play segment as a raw clip to <out>/clips/.",
+    )
+    parser.add_argument(
+        "--label-crops",
+        action="store_true",
+        help="With --phase2, export a per-track crop montage + labels.csv template (for the "
+             "eval harness) to <out>/crops/ and <out>/labels.csv.",
+    )
+    parser.add_argument(
+        "--evaluate",
+        metavar="LABELS_CSV",
+        help="Score predictions against a filled-in labels CSV (team/role/player accuracy) and "
+             "exit. Compares to <out>/tracks.csv unless --tracks is given. Needs no video.",
+    )
+    parser.add_argument(
+        "--tracks",
+        metavar="TRACKS_CSV",
+        help="With --evaluate, the predictions CSV to score (default: <out>/tracks.csv).",
     )
     parser.add_argument(
         "--autoclip",
@@ -105,6 +125,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.evaluate:
+        return _run_evaluate(args)
+
+    if args.video is None:
+        print("error: a video path is required (or use --evaluate LABELS_CSV)", file=sys.stderr)
+        return 1
 
     if args.autoclip:
         return _run_autoclip(args)
@@ -154,6 +181,7 @@ def _run_phase2(args) -> int:
             use_siglip_teams=not args.no_siglip,
             filter_to_surface=not args.no_surface_filter,
             write_clips=args.clips,
+            export_labels=args.label_crops,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -185,6 +213,29 @@ def _run_phase2(args) -> int:
     print(f"Play segments:   {result.segments_path}")
     if result.clips_dir is not None:
         print(f"Live-play clips: {result.clips_dir}")
+    if result.labels_path is not None:
+        print(f"Labeling set:    {result.labels_path} (+ crops/) — fill in team/role/player, "
+              f"then: python -m dbh_vibes --evaluate {result.labels_path}")
+    return 0
+
+
+def _run_evaluate(args) -> int:
+    from pathlib import Path
+
+    from dbh_vibes.evaluate import evaluate, format_report
+
+    labels_csv = Path(args.evaluate)
+    if not labels_csv.exists():
+        print(f"error: labels CSV not found: {labels_csv}", file=sys.stderr)
+        return 1
+    tracks_csv = Path(args.tracks) if args.tracks else Path(args.out) / "tracks.csv"
+    if not tracks_csv.exists():
+        print(f"error: predictions CSV not found: {tracks_csv} "
+              f"(run --phase2 first, or pass --tracks)", file=sys.stderr)
+        return 1
+
+    report = evaluate(labels_csv, tracks_csv)
+    print(format_report(report))
     return 0
 
 
