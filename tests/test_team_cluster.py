@@ -122,6 +122,43 @@ def test_goalie_outliers_do_not_form_a_team():
     assert sum(info.team_sizes) == 22
 
 
+# ---- scale-decorrelation: crop near/far must not drive the split ------------------------------
+
+def test_scale_does_not_hijack_split_when_sizes_given():
+    # Build embeddings where a strong "scale" axis dominates (mimicking near-vs-far fisheye crops),
+    # plus a weak kit axis. Crucially, size is independent of team (both teams span all sizes).
+    rng = np.random.default_rng(5)
+    n = 10
+    kit_dir = np.zeros(DIM); kit_dir[0] = 1.0
+    scale_dir = np.zeros(DIM); scale_dir[5] = 1.0
+    sizes = np.concatenate([np.geomspace(500, 50000, n), np.geomspace(500, 50000, n)])
+    kit_sign = np.array([1.0] * n + [-1.0] * n)            # first n = team A, next n = team B
+    lsz = (np.log(sizes) - np.log(sizes).mean()) / np.log(sizes).std()
+    emb = (0.30 * kit_sign[:, None] * kit_dir[None, :]
+           + 2.0 * lsz[:, None] * scale_dir[None, :]
+           + 0.03 * rng.standard_normal((2 * n, DIM)))
+
+    # Without sizes the scale axis dominates and the split tracks size, not kit.
+    base_labels, _ = cluster_team_embeddings(emb)
+    base_size_corr = abs(np.corrcoef(base_labels, lsz)[0, 1])
+    assert base_size_corr > 0.6                            # baseline is hijacked by scale
+
+    # With per-track sizes, the scale-correlated PCs are dropped and the split follows the kit.
+    labels, _ = cluster_team_embeddings(emb, sizes=sizes)
+    assert _partition_matches(labels, range(0, n), range(n, 2 * n))   # teams recovered
+    assert abs(np.corrcoef(labels, lsz)[0, 1]) < 0.4                  # no longer size-driven
+
+
+def test_sizes_dont_break_a_clean_color_split():
+    # When kit (not scale) is the real structure, passing sizes must not harm a good split.
+    rng = np.random.default_rng(6)
+    a, b = _two_team_centers()
+    emb = np.vstack([_blob(a, 8, 0.05, rng), _blob(b, 8, 0.05, rng)])
+    sizes = rng.uniform(1000, 40000, size=16)   # random sizes, uncorrelated with team
+    labels, _ = cluster_team_embeddings(emb, sizes=sizes)
+    assert _partition_matches(labels, range(0, 8), range(8, 16))
+
+
 # ---- colour-anchored stable labels -----------------------------------------------------------
 
 def test_labels_anchored_to_saturation():

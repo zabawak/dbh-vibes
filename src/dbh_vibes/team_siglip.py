@@ -147,18 +147,53 @@ def aggregate_track_embeddings(
     return _l2norm(np.vstack(rows))
 
 
-def _reduce(track_emb: np.ndarray, n_components: int, random_state: int) -> np.ndarray:
-    """Deterministic PCA denoise + L2-normalise. Returns the track points in reduced space."""
+def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
+    """Pearson correlation, 0 if either side is constant."""
+    if np.std(a) < 1e-9 or np.std(b) < 1e-9:
+        return 0.0
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def _reduce(
+    track_emb: np.ndarray,
+    n_components: int,
+    random_state: int,
+    sizes: np.ndarray | None = None,
+    decorr_threshold: float = 0.5,
+) -> tuple[np.ndarray, int]:
+    """Deterministic PCA denoise, optional scale-decorrelation, then L2-normalise.
+
+    Returns (reduced points, n_dropped). On real fisheye footage the dominant axis of variation in
+    SigLIP crop embeddings is *crop scale* (near players are large and detailed, far players small
+    and blurry) — measured at ~0.86 correlation between the top PC and crop area — so a naive split
+    separates near-vs-far rather than the two kits. When per-track `sizes` are supplied we drop the
+    principal components whose score correlates with log-size above `decorr_threshold`, removing that
+    confound. This is safe for the easy case (a vivid pinnie kit dominates its own PC, which does not
+    correlate with size, so nothing kit-relevant is dropped); it only bites when scale would
+    otherwise hijack the split. At least two components are always kept.
+    """
     from sklearn.decomposition import PCA
 
     n, d = track_emb.shape
     k = max(1, min(n_components, n - 1, d))
     # svd_solver='full' is exact/deterministic (n is tiny, so this is cheap) — no randomised SVD,
     # so the reduction does not wobble between runs the way UMAP did.
-    reduced = PCA(n_components=k, svd_solver="full", random_state=random_state).fit_transform(
+    scores = PCA(n_components=k, svd_solver="full", random_state=random_state).fit_transform(
         track_emb
     )
-    return _l2norm(reduced)
+    n_dropped = 0
+    if sizes is not None and n >= 4 and scores.shape[1] >= 3:
+        lsz = np.log(np.asarray(sizes, dtype=np.float64) + 1e-6)
+        corr = np.array([abs(_safe_corr(scores[:, i], lsz)) for i in range(scores.shape[1])])
+        keep = corr < decorr_threshold
+        if keep.sum() >= 2:
+            n_dropped = int((~keep).sum())
+            scores = scores[:, keep]
+        else:  # almost everything tracks size — keep the two least size-correlated components
+            order = np.argsort(corr)
+            n_dropped = scores.shape[1] - 2
+            scores = scores[:, order[:2]]
+    return _l2norm(scores), n_dropped
 
 
 def _merge_micro_to_two(reduced: np.ndarray, micro_labels: np.ndarray) -> np.ndarray:
@@ -193,6 +228,7 @@ def _merge_micro_to_two(reduced: np.ndarray, micro_labels: np.ndarray) -> np.nda
 def cluster_team_embeddings(
     track_emb: np.ndarray,
     *,
+    sizes: np.ndarray | None = None,
     max_micro: int = 4,
     n_components: int = 16,
     random_state: int = 42,
@@ -200,9 +236,11 @@ def cluster_team_embeddings(
 ) -> tuple[np.ndarray, ClusterInfo]:
     """Cluster per-track embeddings into two teams. Returns (labels, ClusterInfo).
 
-    Pipeline: deterministic PCA -> choose K in [2, max_micro] micro-clusters by silhouette
-    (preferring smaller K unless a larger one is clearly cleaner) -> merge to two teams by size.
-    Fully deterministic given the input row order, so repeated runs on the same crops are identical.
+    Pipeline: deterministic PCA (with optional scale-decorrelation if per-track `sizes` are given,
+    to stop crop near/far scale from hijacking the split) -> choose K in [2, max_micro] micro-clusters
+    by silhouette (preferring smaller K unless a larger one is clearly cleaner) -> merge to two teams
+    by size. Fully deterministic given the input row order, so repeated runs on the same crops are
+    identical.
     """
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
@@ -216,7 +254,7 @@ def cluster_team_embeddings(
         labels = np.array([0, 1], dtype=int)
         return labels, ClusterInfo(0.0, (1, 1), 2)
 
-    reduced = _reduce(track_emb, n_components, random_state)
+    reduced, _ = _reduce(track_emb, n_components, random_state, sizes=sizes)
 
     # Over-segment: try K micro-clusters and keep the cleanest by silhouette, biased toward the
     # smallest K (so two genuine teams stay K=2 and we only peel outliers off when it clearly helps).
@@ -358,6 +396,7 @@ def assign_teams(
     flat_crops: list[np.ndarray] = []
     owners: list[int] = []
     colors_per_track: list[np.ndarray] = []
+    sizes_per_track: list[float] = []
     for tid in track_ids:
         crops = track_crops[tid]
         if not crops:
@@ -366,6 +405,8 @@ def assign_teams(
             flat_crops.append(crop)
             owners.append(tid)
         colors_per_track.append(np.median([torso_color_hsv(c) for c in crops], axis=0))
+        # Crop pixel area is our scale proxy: the near/far confound we decorrelate the split from.
+        sizes_per_track.append(float(np.median([c.shape[0] * c.shape[1] for c in crops])))
 
     present_ids = [t for t in track_ids if track_crops.get(t)]
     if not flat_crops:
@@ -373,7 +414,7 @@ def assign_teams(
 
     crop_emb = embedder.embed(flat_crops)
     track_emb = aggregate_track_embeddings(crop_emb, owners, present_ids)
-    labels, info = cluster_team_embeddings(track_emb)
+    labels, info = cluster_team_embeddings(track_emb, sizes=np.array(sizes_per_track))
     conf = team_confidence(info, labels)
 
     remap = order_labels_by_color(labels, np.vstack(colors_per_track))

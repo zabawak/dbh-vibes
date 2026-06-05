@@ -31,9 +31,11 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
 
 - **SigLIP team classification** (`team_siglip.py`) — appearance embeddings clustered **per
   track** (one mean embedding per player, not per frame, so it's CPU-affordable) into two teams.
-  Separates the teams where the Phase 1 color split couldn't. Hardened against run-to-run
-  instability: deterministic PCA (no UMAP), over-segment-then-merge so goalies/refs can't form a
-  team, and colour-anchored stable labels — details in [`docs/team-clustering.md`](docs/team-clustering.md).
+  Hardened against the run-to-run instability that plagued the first version (deterministic PCA — no
+  UMAP, over-segment-then-merge so goalies/refs can't form a team, colour-anchored stable labels,
+  crop-scale decorrelation) and now **run-to-run stable (validated 100% on real footage)**. Team
+  *accuracy* is still weak on low-contrast kits (white-vs-dark) — see
+  [`docs/team-clustering.md`](docs/team-clustering.md) for the validation results and next steps.
 - **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
 - **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
   time-on-surface only accrues during real play.

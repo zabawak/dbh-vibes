@@ -1,10 +1,14 @@
 # Team Clustering — Robustness Needs
 
-Status: **hardened (algorithm), pending real-footage re-validation.** The clusterer has been
-reworked to remove the instability described below; the new logic is unit-tested on synthetic
-embeddings (`tests/test_team_cluster.py`). It has **not yet been re-run on the real gameplay clip**
-(that needs the video + SigLIP weights, which aren't in this environment) — see *What changed* and
-*Still to validate* at the bottom. The original analysis is kept for context.
+Status: **stability hardened and validated on real footage; team _accuracy_ still limited on
+low-contrast kits.** The run-to-run instability that was the stated top priority is fixed — the
+reworked clusterer is deterministic and gave **100% identical team assignments across repeated
+runs** on the real gameplay clip. But validating on that clip also surfaced a deeper problem the
+original note only speculated about: on this fisheye footage the split is driven by **crop scale
+(near vs far players), not kit**, and the two kits here (white vs dark shirts on a blue rink) are
+too weak a signal for SigLIP to separate. We added a principled fix for the scale confound; the
+residual accuracy gap is real and documented in *Real-footage validation* below. The original
+analysis and the stability rework are kept for context.
 
 ## The problem we saw
 
@@ -81,16 +85,57 @@ Implemented in `src/dbh_vibes/team_siglip.py`; each item maps to a root cause ab
    team-balance counts, micro-cluster count, and a per-track confidence margin (surfaced as the
    `team_conf` column in `tracks.csv` and printed by the CLI), so separation and run-to-run
    stability can be *measured* without ground truth.
+6. **Scale-decorrelation** (new root cause found in validation — see below). When per-track crop
+   sizes are supplied, `_reduce` drops the principal components whose score correlates with
+   log-crop-area above a threshold, so the near/far scale axis can't drive the split. Safe for the
+   easy case: a vivid pinnie kit dominates its own PC, which doesn't correlate with size, so nothing
+   kit-relevant is dropped. Unit-tested (`test_scale_does_not_hijack_split_when_sizes_given`).
 
 Goalies are still merged by *appearance*, not the spatial cue the analysis preferred — they no
 longer tip the split, but a goalie whose gear resembles team A's will fold into team A. Spatial
 goalie handling (near-net position) remains a follow-up once positions are plumbed through.
 
-## Still to validate (needs real footage / a labeled set)
+## Real-footage validation (what we actually measured)
 
-- **Re-run on the gameplay clip** end-to-end with SigLIP and confirm the split is balanced and
-  stable across repeated runs (the failure table above should no longer reproduce).
-- **A small labeled set**: hand-label team for ~20–40 tracks across 2–3 clips (and a couple of
-  different camera setups) to measure *accuracy*, not just internal separation.
-- **Robustness checks**: different lighting, a clip where both teams wear similar colors (expected
-  failure case — document it), and the goalie-heavy frames that tipped the original run.
+Validated on the reference clip cut per `data/README.md` (active gameplay, `-ss 1490`, 30s @
+720p/30fps — 5-on-5 + goalies), `yolo11s` + SigLIP, run twice.
+
+**Stability — fixed.** Both runs were identical: 41 players / 55 spectators, team sizes (18, 11),
+and **29/29 teamed tracks got the same team in both runs (100% agreement)**. The reworked clusterer
+is deterministic; the run-to-run failure table above no longer reproduces. This was the stated top
+priority and it is done.
+
+**Accuracy — the harder, still-open problem.** Eyeballing per-team crop montages and the stats
+showed the split was **not along kit lines**:
+
+- The two clusters separated almost perfectly by **crop size**: team0 median box ≈ 5600 px, team1
+  ≈ 1500 px, with team1 made up *entirely* of small/short (far-from-camera) tracks. The active-play
+  seconds came out wildly lopsided (≈188 s vs 21 s) as a result.
+- Diagnosing the embedding directly: the **top principal component correlated 0.86 with crop area**,
+  and the overall cluster–area correlation was **0.73**. The dominant axis of SigLIP-embedding
+  variation on this fisheye footage is near-vs-far crop detail, *not* kit.
+- Adding the scale-decorrelation (#6 above) drops the cluster–area correlation to **0.08** — the
+  scale artifact is gone — but silhouette falls to ~0.12 and the montages **still mix white and
+  dark shirts in both clusters**. A direct torso-brightness test didn't separate the kits either
+  (crops are contaminated by the bright blue rink, legs, skin). On *this* clip SigLIP simply does
+  not encode the white-vs-dark kit contrast strongly enough to cluster on.
+
+So removing the scale confound was necessary but not sufficient: the earlier "red-pinnie cleanly
+isolated" success was a **high-contrast** kit; this clip's low-contrast white/dark kits are the hard
+case and remain unsolved by appearance embeddings alone.
+
+### Concrete next steps for accuracy (still needs a labeled set to measure)
+
+- **Kit-colour prior / pinnie path.** When one team wears a vivid pinnie, a saturation/hue split (or
+  seeding cluster centers from the two dominant kit hues) is far stronger than SigLIP — and the
+  scale-decorrelation already protects it. Make this the primary path when a high-saturation kit is
+  detected; fall back to embeddings otherwise.
+- **Background-suppressed crops.** Person-segment (or a tight torso box with rink-colour masking)
+  before embedding/colour, so blue rink + legs + skin stop dominating the signal.
+- **A small labeled set** (~20–40 tracks across 2–3 clips, different camera setups) — without it we
+  can only measure internal separation (silhouette / scale-decorrelation), not true team accuracy.
+- **Robustness checks**: different lighting, a both-teams-similar-colours clip (expected failure —
+  document it), and the goalie-heavy frames that tipped the original run.
+
+The validation scripts used (cut clip, run twice, montage, embedding diagnostics) are ad-hoc and
+were kept out of the repo; re-create them from the recipe in `data/README.md` if needed.
