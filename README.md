@@ -29,9 +29,15 @@ tooling, [`docs/architecture.md`](docs/architecture.md) for the phased roadmap, 
 Validated on real ball hockey footage. Adds three capabilities on top of detection + tracking
 (`src/dbh_vibes/pipeline.py`):
 
-- **SigLIP team classification** (`team_siglip.py`) — appearance embeddings → UMAP → KMeans,
-  classifying each *track* once (not every frame, so it's CPU-affordable). Cleanly separates the
-  teams where the Phase 1 color split couldn't.
+- **Team classification** (`team_siglip.py`) — two auto-selected paths. A **kit-colour prior**
+  splits on background-suppressed torso chroma when one team wears a vivid kit (the "pinnies vs
+  none" case) — strong, scale-immune, and it skips SigLIP. Otherwise it falls back to **SigLIP
+  appearance embeddings** clustered **per track** (one mean embedding per player). The embedding
+  path was hardened against the run-to-run instability that plagued the first version (deterministic
+  PCA — no UMAP, over-segment-then-merge so goalies/refs can't form a team, colour-anchored stable
+  labels, crop-scale decorrelation) and is now **run-to-run stable (validated 100% on real
+  footage)**. *Accuracy* on low-contrast kits (white-vs-dark) is still weak when the colour prior
+  can't fire — see [`docs/team-clustering.md`](docs/team-clustering.md) for validation + next steps.
 - **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
 - **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
   time-on-surface only accrues during real play.
@@ -41,12 +47,12 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
   shift detection and a big compute saving on a mostly-idle full game.
 
 ```bash
-pip install -e ".[phase2]"     # adds transformers + umap + scikit-learn
+pip install -e ".[phase2]"     # adds transformers + scikit-learn
 python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
 Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, an enriched
-`tracks.csv` (`team`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
+`tracks.csv` (`team`, `team_conf`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
 spans). Add `--no-siglip` to skip team classification for a faster run, or `--clips` to also
 export per-segment raw clips.
 

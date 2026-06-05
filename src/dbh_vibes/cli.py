@@ -171,6 +171,12 @@ def _run_phase2(args) -> int:
     live_s = total_live_seconds(result.segments, result.fps)
     print(f"Live-play segments: {len(result.segments)} ({live_s:.0f}s of live play total)")
     if result.team_seconds:
+        q = result.team_quality
+        if q is not None:
+            method = "kit-colour prior" if q.method == "kit-color" else "SigLIP embeddings"
+            print(f"Team clustering [{method}]: {q.team_sizes[0]} vs {q.team_sizes[1]} tracks, "
+                  f"silhouette {q.silhouette:.2f}, {q.n_micro} micro-cluster(s) "
+                  f"(higher silhouette = cleaner split)")
         for team, secs in sorted(result.team_seconds.items()):
             print(f"  Team {team}: {secs:.0f} active player-seconds")
     print(f"Annotated video: {result.annotated_path}")
