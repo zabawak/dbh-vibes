@@ -115,8 +115,11 @@ showed the split was **not along kit lines**:
   and the overall cluster–area correlation was **0.73**. The dominant axis of SigLIP-embedding
   variation on this fisheye footage is near-vs-far crop detail, *not* kit.
 - Adding the scale-decorrelation (#6 above) drops the cluster–area correlation to **0.08** — the
-  scale artifact is gone — but silhouette falls to ~0.12 and the montages **still mix white and
-  dark shirts in both clusters**. A direct torso-brightness test didn't separate the kits either
+  scale artifact is gone — and the end-to-end split becomes much more **balanced**: team sizes
+  (13, 16) and active-play seconds **80 s vs 129 s** (vs the pre-fix size-driven (18, 11) and
+  **188 s vs 21 s**, a 9:1 → 1.6:1 improvement), still 100% stable across runs.
+- But this is balance, not correctness: silhouette is only ~0.13 and the montages **still mix white
+  and dark shirts in both clusters**. A direct torso-brightness test didn't separate the kits either
   (crops are contaminated by the bright blue rink, legs, skin). On *this* clip SigLIP simply does
   not encode the white-vs-dark kit contrast strongly enough to cluster on.
 
