@@ -50,6 +50,24 @@ Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, 
 spans). Add `--no-siglip` to skip team classification for a faster run, or `--clips` to also
 export per-segment raw clips.
 
+### Auto-clip pre-pass (`--autoclip`) — skip dead time *before* the heavy pass
+
+A full game is mostly dead time, so running the whole pipeline over all 38 minutes is wasteful.
+`--autoclip` (`autoclip.py`) is a **cheap detection-only pre-pass** — YOLO at a coarse frame
+stride, no tracker — that locates the live-play stretches first and writes a manifest you can
+act on, instead of paying for the full analysis everywhere.
+
+```bash
+python -m dbh_vibes data/game.mp4 --out runs/scan --autoclip            # just the manifest
+python -m dbh_vibes data/game.mp4 --out runs/scan --autoclip --cut      # + cut each clip (ffmpeg)
+```
+
+Writes `segments.json` (frame/second bounds per segment **plus a compute-savings estimate** —
+how much of the video is skippable dead time) and `segments.csv`. With `--cut` it also slices
+each live segment to its own `.mp4`. Tunables: `--clip-stride` (pre-pass sampling), `--min-segment`,
+`--merge-gap`, `--pad`. On the reference footage a bench-break clip reports *skip 100%* (zero
+segments) while live gameplay reports ~*skip 3%*.
+
 ## Quickstart
 
 Requires Python 3.11.

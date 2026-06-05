@@ -17,6 +17,7 @@ Pure stdlib (no numpy/cv2) so it stays trivially testable and import-cheap.
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,6 +115,47 @@ def total_live_seconds(segments: list[PlaySegment], fps: float) -> float:
     return sum(s.duration_seconds(fps) for s in segments)
 
 
+def pad_segments(
+    segments: list[PlaySegment], fps: float, pad_seconds: float, frame_count: int
+) -> list[PlaySegment]:
+    """Extend each segment by ``pad_seconds`` on both ends, clamp to the video, re-merge overlaps.
+
+    Padding catches the run-up and run-out of a play that the activity signal trims; clamping
+    keeps bounds in ``[0, frame_count-1]``; re-merging collapses any segments that padding pushed
+    into contact. Returns fresh, contiguously re-indexed segments (the input is left untouched).
+    """
+    if not segments:
+        return []
+    pad = max(0, round(pad_seconds * fps)) if fps else 0
+    last = max(0, frame_count - 1)
+    intervals: list[list[int]] = []
+    for s in sorted(segments, key=lambda x: x.start_frame):
+        a = max(0, s.start_frame - pad)
+        b = min(last, s.end_frame + pad)
+        if intervals and a <= intervals[-1][1] + 1:  # overlapping or directly adjacent
+            intervals[-1][1] = max(intervals[-1][1], b)
+        else:
+            intervals.append([a, b])
+    return [PlaySegment(index=i, start_frame=a, end_frame=b)
+            for i, (a, b) in enumerate(intervals)]
+
+
+def segment_record(seg: PlaySegment, fps: float) -> dict:
+    """One segment as a plain dict (frame bounds + second bounds + duration).
+
+    The single source of truth for the segment schema, shared by the CSV and JSON writers.
+    """
+    return {
+        "segment": seg.index,
+        "start_frame": seg.start_frame,
+        "end_frame": seg.end_frame,
+        "n_frames": seg.n_frames,
+        "start_time_s": round(seg.start_seconds(fps), 2),
+        "end_time_s": round(seg.end_seconds(fps), 2),
+        "duration_s": round(seg.duration_seconds(fps), 2),
+    }
+
+
 def frame_segment_index(segments: list[PlaySegment], frame_count: int) -> list[int | None]:
     """Map each frame index 0..frame_count-1 to its segment index, or None if idle.
 
@@ -136,12 +178,29 @@ def write_segments_csv(path: str | Path, segments: list[PlaySegment], fps: float
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for s in segments:
-            w.writerow({
-                "segment": s.index,
-                "start_frame": s.start_frame,
-                "end_frame": s.end_frame,
-                "n_frames": s.n_frames,
-                "start_time_s": round(s.start_seconds(fps), 2),
-                "end_time_s": round(s.end_seconds(fps), 2),
-                "duration_s": round(s.duration_seconds(fps), 2),
-            })
+            w.writerow(segment_record(s, fps))
+
+
+def write_segments_json(
+    path: str | Path,
+    segments: list[PlaySegment],
+    fps: float,
+    *,
+    extra: dict | None = None,
+) -> dict:
+    """Write a richer ``segments.json`` manifest and return the dict that was written.
+
+    Always carries the per-segment records plus headline numbers (fps, segment count, live
+    seconds). ``extra`` merges in caller-specific context — e.g. the auto-clip pre-pass adds
+    ``source``, ``total_seconds`` and the compute-savings estimate.
+    """
+    manifest: dict = {
+        "fps": round(fps, 3),
+        "n_segments": len(segments),
+        "live_seconds": round(total_live_seconds(segments, fps), 2),
+    }
+    if extra:
+        manifest.update(extra)
+    manifest["segments"] = [segment_record(s, fps) for s in segments]
+    Path(path).write_text(json.dumps(manifest, indent=2))
+    return manifest
