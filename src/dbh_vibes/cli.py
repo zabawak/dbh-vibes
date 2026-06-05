@@ -173,10 +173,13 @@ def _run_phase2(args) -> int:
     if result.team_seconds:
         for team, secs in sorted(result.team_seconds.items()):
             print(f"  Team {team}: {secs:.0f} active player-seconds")
+    from dbh_vibes.boxscore import format_boxscore
+    print(format_boxscore(result.boxscore))
     print(f"Annotated video: {result.annotated_path}")
     print(f"Position heatmap: {result.heatmap_path}")
     print(f"Track summary:   {result.csv_path}")
     print(f"Play segments:   {result.segments_path}")
+    print(f"Box score:       {result.boxscore_path}")
     if result.clips_dir is not None:
         print(f"Live-play clips: {result.clips_dir}")
     return 0

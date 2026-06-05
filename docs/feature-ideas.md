@@ -33,8 +33,13 @@ detection** and/or **homography**.
 - **Human-in-the-loop identity.** Given no jersey numbers, a tiny labeling step beats perfect
   automation: show one crop per track cluster, let the user tag "that's player A / team X," then
   propagate. Turns a hard CV problem into a 2-minute review. *Low–medium; pairs with Phase 3.*
-- **Box-score / stats export.** Emit per-game JSON/CSV (per player: shifts, seconds, team; per
-  team: totals) — already partway there in `tracks.csv`. Makes outputs consumable. *Low.*
+- **Box-score / stats export** *(done — `boxscore.py`).* Rolls the scattered per-track numbers into
+  one consumable artifact: a `boxscore.json` (game header + per-team totals + a per-player table,
+  most-active first) plus a compact text table in the `--phase2` console summary. Honest scope:
+  **per-track**, not yet per-*player* — with no jersey numbers a player who re-enters is still two
+  tracks (same caveat as `tracks.csv`), so true shift counts wait on Phase 3 identity; team totals
+  sum over tracks and are robust to that. Pure-stdlib core, unit-tested in `tests/test_boxscore.py`.
+  *Was: Low difficulty; already partway there in `tracks.csv`.*
 - **Capture-side levers (no code).** Distinct **colored pinnies** make team clustering far more
   reliable; a higher, wider, fixed mount and a marked game-start make everything downstream
   easier. Document these as recommended recording practice. *Trivial, large payoff.*
