@@ -29,13 +29,15 @@ tooling, [`docs/architecture.md`](docs/architecture.md) for the phased roadmap, 
 Validated on real ball hockey footage. Adds three capabilities on top of detection + tracking
 (`src/dbh_vibes/pipeline.py`):
 
-- **SigLIP team classification** (`team_siglip.py`) — appearance embeddings clustered **per
-  track** (one mean embedding per player, not per frame, so it's CPU-affordable) into two teams.
-  Hardened against the run-to-run instability that plagued the first version (deterministic PCA — no
-  UMAP, over-segment-then-merge so goalies/refs can't form a team, colour-anchored stable labels,
-  crop-scale decorrelation) and now **run-to-run stable (validated 100% on real footage)**. Team
-  *accuracy* is still weak on low-contrast kits (white-vs-dark) — see
-  [`docs/team-clustering.md`](docs/team-clustering.md) for the validation results and next steps.
+- **Team classification** (`team_siglip.py`) — two auto-selected paths. A **kit-colour prior**
+  splits on background-suppressed torso chroma when one team wears a vivid kit (the "pinnies vs
+  none" case) — strong, scale-immune, and it skips SigLIP. Otherwise it falls back to **SigLIP
+  appearance embeddings** clustered **per track** (one mean embedding per player). The embedding
+  path was hardened against the run-to-run instability that plagued the first version (deterministic
+  PCA — no UMAP, over-segment-then-merge so goalies/refs can't form a team, colour-anchored stable
+  labels, crop-scale decorrelation) and is now **run-to-run stable (validated 100% on real
+  footage)**. *Accuracy* on low-contrast kits (white-vs-dark) is still weak when the colour prior
+  can't fire — see [`docs/team-clustering.md`](docs/team-clustering.md) for validation + next steps.
 - **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
 - **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
   time-on-surface only accrues during real play.

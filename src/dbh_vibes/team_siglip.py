@@ -118,6 +118,8 @@ class ClusterInfo:
     n_micro: int
     reduced: np.ndarray = field(repr=False, default_factory=lambda: np.empty((0, 0)))
     centroids: np.ndarray = field(repr=False, default_factory=lambda: np.empty((0, 0)))
+    method: str = "siglip"           # "kit-color" (vivid-kit prior) or "siglip" (embedding fallback)
+    conf: np.ndarray | None = field(repr=False, default=None)  # per-track confidence, if precomputed
 
 
 def _l2norm(x: np.ndarray, axis: int = -1, eps: float = 1e-8) -> np.ndarray:
@@ -365,6 +367,135 @@ def order_labels_by_color(
 
 
 # --------------------------------------------------------------------------------------------
+# Kit-colour prior: when one team wears a vivid kit (pinnies), colour beats SigLIP outright
+# --------------------------------------------------------------------------------------------
+#
+# Real-footage validation showed SigLIP embeddings split by crop scale and don't separate
+# low-contrast (white-vs-dark) kits. But the project's common case is "pinnies vs none" — a vivid
+# kit on one team. There, a colour split is far stronger *and* immune to the scale confound. So we
+# compute a robust per-track kit chroma and, when a coherent vivid group exists, split on colour;
+# otherwise we fall back to the embedding path. The chroma is background-suppressed per crop (the
+# blue rink would otherwise dominate the hue) by dropping pixels near the crop *border* hue, which
+# is almost always the rink/surroundings the player stands against.
+
+
+def torso_kit_chroma(crop: np.ndarray) -> np.ndarray:
+    """Background-suppressed torso chroma vector [cx, cy] (size-invariant kit-colour signal).
+
+    cx/cy are the saturation-weighted mean of the torso pixels' hue direction, after removing
+    pixels whose hue matches the crop border (the rink/background). A vivid coherent kit gives a
+    large vector in a consistent direction; a plain white/dark kit gives a near-zero vector.
+    """
+    h, w = crop.shape[:2]
+    region = crop[int(0.15 * h):int(0.55 * h), int(0.20 * w):int(0.80 * w)] if (h >= 6 and w >= 6) else crop
+    if region.size == 0:
+        region = crop
+    hsv_full = cv2_cvt_hsv(crop)
+    border = np.concatenate([hsv_full[0], hsv_full[-1], hsv_full[:, 0], hsv_full[:, -1]])
+    border = border.reshape(-1, 3).astype(np.float64)
+    bg_hue = float(np.median(border[:, 0]))
+    rh = cv2_cvt_hsv(region).reshape(-1, 3).astype(np.float64)
+    hue, sat = rh[:, 0], rh[:, 1] / 255.0
+    dh = np.minimum(np.abs(hue - bg_hue), 180.0 - np.abs(hue - bg_hue))
+    keep = ~((dh < 12.0) & (sat > 0.25))         # drop rink-like (near-border hue & saturated)
+    if keep.sum() < 10:
+        keep = np.ones_like(keep, dtype=bool)
+    ang = hue[keep] * 2.0 * np.pi / 180.0         # OpenCV hue is 0-179 == degrees/2
+    return np.array([np.mean(sat[keep] * np.cos(ang)), np.mean(sat[keep] * np.sin(ang))])
+
+
+def cv2_cvt_hsv(bgr: np.ndarray) -> np.ndarray:
+    """BGR->HSV via OpenCV if available, else a numpy fallback (keeps the core import-light)."""
+    try:
+        import cv2
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    except Exception:  # pragma: no cover - exercised only without OpenCV
+        flat = _bgr_to_hsv_array(bgr.reshape(-1, 3))
+        return flat.reshape(bgr.shape)
+
+
+def _bgr_to_hsv_array(bgr: np.ndarray) -> np.ndarray:
+    """Vectorised BGR->HSV in OpenCV ranges (H 0-179, S/V 0-255) for an (N,3) uint8 array."""
+    x = bgr.astype(np.float64) / 255.0
+    b, g, r = x[:, 0], x[:, 1], x[:, 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    diff = mx - mn
+    hue = np.zeros_like(mx)
+    nz = diff > 1e-8
+    rm = nz & (mx == r); gm = nz & (mx == g) & ~rm; bm = nz & (mx == b) & ~rm & ~gm
+    hue[rm] = (60 * ((g[rm] - b[rm]) / diff[rm]) + 360) % 360
+    hue[gm] = 60 * ((b[gm] - r[gm]) / diff[gm]) + 120
+    hue[bm] = 60 * ((r[bm] - g[bm]) / diff[bm]) + 240
+    sat = np.where(mx > 1e-8, diff / (mx + 1e-8), 0.0)
+    return np.stack([hue / 2.0, sat * 255.0, mx * 255.0], axis=1)
+
+
+def track_kit_chroma(crops: list[np.ndarray]) -> np.ndarray:
+    """Median torso chroma over a track's crops -> one [cx, cy] kit vector per track."""
+    if not crops:
+        return np.zeros(2)
+    return np.median(np.vstack([torso_kit_chroma(c) for c in crops]), axis=0)
+
+
+def _euclid_margin_conf(points: np.ndarray, labels: np.ndarray, centroids: np.ndarray) -> np.ndarray:
+    """Per-point confidence in [0,1] from the relative distance to own vs other centroid."""
+    d0 = np.linalg.norm(points - centroids[0], axis=1)
+    d1 = np.linalg.norm(points - centroids[1], axis=1)
+    own = np.where(labels == 0, d0, d1)
+    other = np.where(labels == 0, d1, d0)
+    return np.clip((other - own) / (other + own + 1e-9) * 0.5 + 0.5, 0.0, 1.0)
+
+
+def detect_kit_split(
+    chroma: np.ndarray,
+    *,
+    vivid_bar: float = 0.35,
+    plain_bar: float = 0.22,
+    coherence_bar: float = 0.6,
+    min_frac: float = 0.15,
+) -> tuple[np.ndarray, ClusterInfo] | None:
+    """Split tracks into two teams by kit colour iff a coherent *vivid* kit group exists.
+
+    Returns (labels, ClusterInfo with method='kit-color') when accepted, else None (caller falls
+    back to embeddings). The structure we accept is one *vivid* team vs one *plain* team, so we
+    require the more-saturated cluster to be genuinely vivid (`vivid_bar`) and hue-coherent
+    (`coherence_bar`), the other cluster to be near-neutral (`plain_bar`, which rejects two
+    competing colourful groups / scattered accessories), and a non-degenerate share of tracks
+    (`min_frac`). Validated: real white/dark footage falls back; a pinnie team is cleanly isolated.
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
+
+    n = len(chroma)
+    if n < 6:
+        return None
+    mags = np.linalg.norm(chroma, axis=1)
+    if np.std(mags) < 1e-6:
+        return None
+    labels = KMeans(n_clusters=2, n_init=10, random_state=42).fit_predict(chroma)
+    if len(np.unique(labels)) < 2:
+        return None
+    vivid = 0 if mags[labels == 0].mean() >= mags[labels == 1].mean() else 1
+    vmask = labels == vivid
+    vivid_mag = float(mags[vmask].mean())
+    plain_mag = float(mags[~vmask].mean())
+    units = chroma[vmask] / (mags[vmask][:, None] + 1e-9)
+    coherence = float(np.linalg.norm(units.mean(axis=0)))
+    balance = float(min(vmask.mean(), (~vmask).mean()))
+    if not (vivid_mag >= vivid_bar and plain_mag <= plain_bar and coherence >= coherence_bar
+            and balance >= min_frac and vmask.sum() >= 2 and (~vmask).sum() >= 2):
+        return None
+
+    sil = float(silhouette_score(chroma, labels)) if n > 2 else 0.0
+    centroids = np.vstack([chroma[labels == 0].mean(axis=0), chroma[labels == 1].mean(axis=0)])
+    info = ClusterInfo(sil, (int((labels == 0).sum()), int((labels == 1).sum())), 2,
+                       chroma, centroids, method="kit-color")
+    info.conf = _euclid_margin_conf(chroma, labels, centroids)
+    return labels, info
+
+
+# --------------------------------------------------------------------------------------------
 # Orchestration: crops -> per-track team assignment (used by the pipeline)
 # --------------------------------------------------------------------------------------------
 
@@ -389,14 +520,20 @@ def assign_teams(
 ) -> TeamAssignment:
     """Assign one stable team id per track from its sampled crops.
 
-    Steps (all label-free): embed crops once -> pool to one embedding per track -> cluster tracks
-    into two teams (over-segment + size-merge) -> anchor T0/T1 to kit colour -> report confidence.
+    Two label-free paths, auto-selected:
+      - **Kit-colour prior** (preferred when it fires): if a coherent *vivid* kit group exists
+        (e.g. pinnies), split on background-suppressed torso chroma. Strong, scale-immune, and
+        skips the SigLIP embedding entirely — much cheaper.
+      - **Embedding fallback**: otherwise embed crops -> pool per track -> scale-decorrelated
+        clustering (over-segment + size-merge).
+    Either way T0/T1 are anchored to kit colour and a per-track confidence is reported.
     """
     track_ids = sorted(track_crops)
     flat_crops: list[np.ndarray] = []
     owners: list[int] = []
     colors_per_track: list[np.ndarray] = []
     sizes_per_track: list[float] = []
+    chroma_per_track: list[np.ndarray] = []
     for tid in track_ids:
         crops = track_crops[tid]
         if not crops:
@@ -407,15 +544,22 @@ def assign_teams(
         colors_per_track.append(np.median([torso_color_hsv(c) for c in crops], axis=0))
         # Crop pixel area is our scale proxy: the near/far confound we decorrelate the split from.
         sizes_per_track.append(float(np.median([c.shape[0] * c.shape[1] for c in crops])))
+        chroma_per_track.append(track_kit_chroma(crops))
 
     present_ids = [t for t in track_ids if track_crops.get(t)]
     if not flat_crops:
         return TeamAssignment({}, {}, ClusterInfo(0.0, (0, 0), 0))
 
-    crop_emb = embedder.embed(flat_crops)
-    track_emb = aggregate_track_embeddings(crop_emb, owners, present_ids)
-    labels, info = cluster_team_embeddings(track_emb, sizes=np.array(sizes_per_track))
-    conf = team_confidence(info, labels)
+    # Cheap colour prior first — if a vivid kit team is present, we never pay for SigLIP.
+    kit = detect_kit_split(np.vstack(chroma_per_track))
+    if kit is not None:
+        labels, info = kit
+        conf = info.conf
+    else:
+        crop_emb = embedder.embed(flat_crops)
+        track_emb = aggregate_track_embeddings(crop_emb, owners, present_ids)
+        labels, info = cluster_team_embeddings(track_emb, sizes=np.array(sizes_per_track))
+        conf = team_confidence(info, labels)
 
     remap = order_labels_by_color(labels, np.vstack(colors_per_track))
     stable = np.array([remap[int(l)] for l in labels], dtype=int)

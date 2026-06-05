@@ -6,9 +6,11 @@ reworked clusterer is deterministic and gave **100% identical team assignments a
 runs** on the real gameplay clip. But validating on that clip also surfaced a deeper problem the
 original note only speculated about: on this fisheye footage the split is driven by **crop scale
 (near vs far players), not kit**, and the two kits here (white vs dark shirts on a blue rink) are
-too weak a signal for SigLIP to separate. We added a principled fix for the scale confound; the
-residual accuracy gap is real and documented in *Real-footage validation* below. The original
-analysis and the stability rework are kept for context.
+too weak a signal for SigLIP to separate. We added a principled fix for the scale confound and a
+**kit-colour prior** that splits on colour (and skips SigLIP) when a vivid kit is present — the
+common "pinnies vs none" case — falling back to embeddings otherwise. On this white/dark recording
+the prior correctly declines and the residual accuracy gap is real; both are documented in
+*Real-footage validation* below. The original analysis and the stability rework are kept for context.
 
 ## The problem we saw
 
@@ -90,6 +92,14 @@ Implemented in `src/dbh_vibes/team_siglip.py`; each item maps to a root cause ab
    log-crop-area above a threshold, so the near/far scale axis can't drive the split. Safe for the
    easy case: a vivid pinnie kit dominates its own PC, which doesn't correlate with size, so nothing
    kit-relevant is dropped. Unit-tested (`test_scale_does_not_hijack_split_when_sizes_given`).
+7. **Kit-colour prior with auto-selection** (`detect_kit_split`, `torso_kit_chroma`). Since the
+   embedding fails on low-contrast kits but the project's common case is "pinnies vs none", we try a
+   colour split first: a background-suppressed torso **chroma** per track (rink pixels removed by
+   dropping the crop's border hue), then accept a *vivid-vs-plain* split only when the saturated
+   cluster is genuinely vivid, hue-coherent, near a neutral other cluster, and balanced. When it
+   fires it splits on colour (scale-immune, and it **skips SigLIP entirely** — a compute win);
+   otherwise it falls back to the embedding path. The selected path is reported as
+   `team_quality.method` and printed by the CLI.
 
 Goalies are still merged by *appearance*, not the spatial cue the analysis preferred — they no
 longer tip the split, but a goalie whose gear resembles team A's will fold into team A. Spatial
@@ -127,18 +137,29 @@ So removing the scale confound was necessary but not sufficient: the earlier "re
 isolated" success was a **high-contrast** kit; this clip's low-contrast white/dark kits are the hard
 case and remain unsolved by appearance embeddings alone.
 
+**Kit-colour prior (#7) on this footage.** The vivid-kit path was added for exactly the case the
+embedding can't handle. This recording, however, is white-vs-dark across all of its games — no
+natural vivid two-team scene exists (scanned the full 38 min) — so the prior correctly **declines
+and falls back to embeddings** here (`method = "siglip"`), which is the right behaviour and means no
+regression on the hard clip. It was validated *positively* two ways: on synthetic chroma, and on the
+real crops with half of them tinted to a vivid kit, where `detect_kit_split` / `assign_teams`
+isolate the tinted team with **100% accuracy, silhouette 0.90, confidence 0.98, and without invoking
+SigLIP**. A natural pinnie clip is still wanted to confirm end-to-end on untouched footage.
+
 ### Concrete next steps for accuracy (still needs a labeled set to measure)
 
-- **Kit-colour prior / pinnie path.** When one team wears a vivid pinnie, a saturation/hue split (or
-  seeding cluster centers from the two dominant kit hues) is far stronger than SigLIP — and the
-  scale-decorrelation already protects it. Make this the primary path when a high-saturation kit is
-  detected; fall back to embeddings otherwise.
-- **Background-suppressed crops.** Person-segment (or a tight torso box with rink-colour masking)
-  before embedding/colour, so blue rink + legs + skin stop dominating the signal.
+- **Kit-colour prior — done (#7), needs a real pinnie clip to confirm end-to-end.** Currently
+  "vivid vs plain"; extend to two *distinct* vivid kits (e.g. red vs blue) — today that falls back
+  to embeddings.
+- **Background-suppressed crops.** The colour path already removes the rink via border-hue masking;
+  do the same before *embedding* (person-segment or tight torso box) so blue rink + legs + skin
+  stop dominating SigLIP — the most promising lever for the white-vs-dark case.
 - **A small labeled set** (~20–40 tracks across 2–3 clips, different camera setups) — without it we
-  can only measure internal separation (silhouette / scale-decorrelation), not true team accuracy.
+  can only measure internal separation (silhouette / scale-decorrelation / kit-accuracy on tinted
+  data), not true team accuracy on natural footage.
 - **Robustness checks**: different lighting, a both-teams-similar-colours clip (expected failure —
   document it), and the goalie-heavy frames that tipped the original run.
 
-The validation scripts used (cut clip, run twice, montage, embedding diagnostics) are ad-hoc and
-were kept out of the repo; re-create them from the recipe in `data/README.md` if needed.
+The validation scripts used (cut clip, run twice, montage, tinted-crop colour test, embedding
+diagnostics) are ad-hoc and were kept out of the repo; re-create them from the recipe in
+`data/README.md` if needed.

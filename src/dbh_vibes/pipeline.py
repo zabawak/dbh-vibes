@@ -77,6 +77,7 @@ class TeamQuality:
     silhouette: float
     team_sizes: tuple[int, int]
     n_micro: int
+    method: str = "siglip"           # which path produced the split: "kit-color" or "siglip"
 
 
 @dataclass
@@ -207,6 +208,7 @@ def run_phase2(
                 silhouette=assignment.silhouette,
                 team_sizes=assignment.team_sizes,
                 n_micro=assignment.info.n_micro,
+                method=assignment.info.method,
             )
 
     # ---- Heatmap output ----

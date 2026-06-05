@@ -19,9 +19,11 @@ from dbh_vibes.team_siglip import (
     ClusterInfo,
     aggregate_track_embeddings,
     cluster_team_embeddings,
+    detect_kit_split,
     order_labels_by_color,
     team_confidence,
     torso_color_hsv,
+    torso_kit_chroma,
 )
 
 DIM = 32
@@ -203,6 +205,54 @@ def test_confidence_defaults_when_single_team():
     info = ClusterInfo(0.0, (1, 0), 1)
     conf = team_confidence(info, np.zeros(1, dtype=int))
     assert conf.tolist() == [0.5]
+
+
+# ---- kit-colour prior (vivid-kit / pinnie path) ----------------------------------------------
+
+def _chroma(n_vivid, n_plain, hue_deg=0.0, sat=0.7, jitter=0.04, rng=None):
+    """Synthetic chroma vectors: a coherent vivid group at `hue_deg` + a plain near-origin group."""
+    rng = rng or np.random.default_rng(0)
+    ang = np.deg2rad(hue_deg)
+    vivid = sat * np.array([np.cos(ang), np.sin(ang)]) + jitter * rng.standard_normal((n_vivid, 2))
+    plain = 0.08 * rng.standard_normal((n_plain, 2))   # near origin, no coherent direction
+    return np.vstack([vivid, plain])
+
+
+def test_kit_split_fires_for_vivid_team():
+    chroma = _chroma(6, 7, hue_deg=0.0, sat=0.7)
+    out = detect_kit_split(chroma)
+    assert out is not None                       # a vivid coherent kit -> colour path accepted
+    labels, info = out
+    assert info.method == "kit-color"
+    # The first 6 (vivid) must all share one team, the 7 plain the other.
+    assert _partition_matches(labels, range(0, 6), range(6, 13))
+
+
+def test_kit_split_rejects_low_contrast_kits():
+    # Two plain near-origin groups (mimics white-vs-dark): no vivid kit -> must fall back (None).
+    rng = np.random.default_rng(1)
+    chroma = 0.12 * rng.standard_normal((20, 2))
+    assert detect_kit_split(chroma) is None
+
+
+def test_kit_split_rejects_two_vivid_teams():
+    # Two *competing* vivid colours (red vs cyan) are not the "vivid vs plain" structure we model:
+    # the plain cluster isn't near-origin, so we fall back to embeddings rather than guess.
+    rng = np.random.default_rng(2)
+    red = 0.7 * np.array([1.0, 0.0]) + 0.04 * rng.standard_normal((8, 2))
+    cyan = 0.7 * np.array([-1.0, 0.0]) + 0.04 * rng.standard_normal((8, 2))
+    assert detect_kit_split(np.vstack([red, cyan])) is None
+
+
+def test_kit_split_needs_enough_tracks():
+    assert detect_kit_split(_chroma(2, 2)) is None     # n < 6 -> not enough to judge
+
+
+def test_torso_kit_chroma_red_vs_white():
+    red = np.zeros((40, 20, 3), dtype=np.uint8); red[:, :, 2] = 220   # BGR red
+    white = np.full((40, 20, 3), 240, dtype=np.uint8)
+    assert np.linalg.norm(torso_kit_chroma(red)) > 0.4       # vivid -> large chroma
+    assert np.linalg.norm(torso_kit_chroma(white)) < 0.15    # plain -> near zero
 
 
 # ---- torso colour helper ---------------------------------------------------------------------
