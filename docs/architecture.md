@@ -184,7 +184,11 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
   `n_shifts ≤ n_fragments` always). The correction is visible per identity — e.g. a player whose 3
   fragments (tracks `7 133 303`) the tracker split mid-surface collapses to 2 shifts, and a 2-fragment
   player (`10 53`) to a single continuous shift — while genuine multi-stint players are kept apart
-  (one identity shows 3 shifts split on ~9–11 s off-surface gaps). *Next (deferred):* an explicit
+  (one identity shows 3 shifts split on ~9–11 s off-surface gaps). On a **3-minute clip** with real
+  line changes (`-ss 1430 -t 180`) the effect is larger and clearer: 141 track fragments → 20
+  identities → **104 true shifts** (deterministic; non-overlapping; mean 5.2 shifts/player, range
+  3–9), so heavily-fragmented players collapse sensibly (e.g. 12 fragments → 8 shifts) while the
+  per-player shift structure of a rotating bench is preserved. *Next (deferred):* an explicit
   `supervision` entry/exit zone to sharpen the exact on/off instant and attribute line changes /
   on-ice goal context.
 

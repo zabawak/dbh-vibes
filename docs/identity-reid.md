@@ -58,7 +58,10 @@ With `--phase2 --reid`:
   spans, bridging short temporal gaps (occlusion / tracker re-acquire → same shift) and splitting on
   a bench-length gap (→ new shift); the surface filter already drops bench detections, so a bench
   trip *is* that long temporal gap. Replaces the over-counting fragment-count shift estimate.
-  Validated on the reference clip: 28 fragments → 13 identities → **23 true shifts**, deterministic.
+  Validated on the reference clip (28 fragments → 13 identities → **23 true shifts**) and on a
+  3-minute clip with real line changes (141 fragments → 20 identities → **104 true shifts**, mean
+  5.2 shifts/player) — deterministic, shifts non-overlapping within each player, `n_shifts ≤
+  n_fragments` always.
 - The console prints `tracks -> identities`, silhouette, and how many concurrent-overlap merges the
   constraint blocked.
 
