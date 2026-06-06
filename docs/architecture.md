@@ -138,24 +138,32 @@ classic jersey-number-OCR path does **not** apply. Instead we identify players b
 each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone) that is
 **consistent within a single game**, even if it changes between games.
 
-- **Appearance-based re-identification.** Build a per-player appearance signature (a re-ID
-  embedding — e.g. OSNet/torchreid, or per-track aggregated SigLIP features) and cluster all
-  tracks in a game into ~roster-size identities. Each identity = the set of fragmented tracks
-  belonging to one person. This stitches the fragmented track ids (we saw ~100+ ids for ~13
-  people) into **stable per-player identities** → true per-player time-on-surface and shift
-  counts. Same embedding machinery as team clustering, but at finer (per-individual) granularity.
+- **Appearance-based re-identification — implemented (`identity.py`, `--reid`).** Builds a
+  per-player appearance signature (per-track aggregated SigLIP features on background-suppressed
+  crops — the *same* embedding pass as team clustering, shared so SigLIP runs once) and clusters all
+  player tracks in a clip into ~roster-size identities. Each identity = the set of fragmented tracks
+  belonging to one person, so the fragmented track ids (27 tracks for ~13 people on the reference
+  clip) stitch into **stable per-player identities** → true per-player time-on-surface and shift
+  counts, emitted as a `player` column in `tracks.csv` and a per-player `players.csv` roll-up.
+- **Constrained clustering with a temporal prior.** The clusterer is constrained agglomerative
+  (average-linkage cosine) with a hard **temporal cannot-link**: two tracks whose frame spans
+  overlap in time cannot be the same person. This both prevents the look-alike failure mode (below)
+  and makes the *max number of players on the surface at once* a natural floor on the identity count
+  (~12 in 5-on-5 + goalies), so the count lands near the roster even without `--roster`.
 - **How this differs from team clustering.** Team = coarse (2 groups by kit); identity = fine
   (one cluster per person, using the *per-player* gear differences as the signal). Identity is
   the harder, more valuable target.
-- **Already measurable.** The eval harness (`evaluate.py`) has a `player` (identity) column ready:
-  the same labeling montages can be tagged with per-player ids, and `--evaluate` will score an
-  identity clustering with the same optimal-alignment metric used for teams — so Phase 3 lands with
-  a number from day one instead of being eyeballed.
-- **Known failure mode to document.** If two players wear near-identical gear, appearance alone
-  can't separate them — fall back on spatiotemporal continuity (motion/position across short
-  gaps) and, where it exists, any distinguishing cue. A real league with matching uniforms would
-  break this entirely and would need numbers or positional tracking; pickup with varied gear is
-  the favorable case.
+- **Validated on real footage.** Deterministic across runs; 0 temporal violations; forced to roster
+  size (`--roster 13`) every team-checkable merge respects the team ground truth (15/15 same-team, 0
+  cross-team, vs ~49% chance) — real identity signal. A clean per-individual *accuracy* number still
+  needs identity ground truth, which is hard to label by sight at this crop resolution (same root
+  cause as the 56.5% team ceiling). The eval harness (`evaluate.py`) already scores the `player`
+  column with the same optimal-alignment metric used for teams, ready the moment such labels exist.
+  See **[identity-reid.md](identity-reid.md)**.
+- **Known failure mode (handled).** Two players in near-identical gear can't be separated by
+  appearance alone — the temporal cannot-link constraint stops them collapsing *whenever they share
+  the surface*, falling back on spatiotemporal continuity. A real league in matching uniforms would
+  still need numbers or positional tracking; pickup with varied gear is the favorable case.
 - **Other constraints to respect.** Appearance is consistent only *within* a game (re-build the
   gallery per game); lighting drifts over a long game; players add/remove layers. Let roster size
   be configurable or auto-determined from clustering quality.

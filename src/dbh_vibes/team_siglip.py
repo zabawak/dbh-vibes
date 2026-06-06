@@ -540,6 +540,40 @@ def detect_kit_split(
 
 
 # --------------------------------------------------------------------------------------------
+# Shared embedding pass (one mean SigLIP embedding per track) — reused by team + identity
+# --------------------------------------------------------------------------------------------
+
+def embed_tracks(
+    embedder: SiglipTeamClassifier,
+    track_crops: dict[int, list[np.ndarray]],
+    *,
+    suppress_background: bool = True,
+) -> tuple[list[int], np.ndarray]:
+    """Embed a track's sampled crops and pool them into one mean embedding per track.
+
+    Returns ``(present_ids, track_emb)`` where ``track_emb`` rows align to ``present_ids`` (the
+    track ids that had at least one crop). With ``suppress_background`` each crop is torso-cropped
+    and its rink-coloured background neutralised before embedding, so SigLIP keys on the kit, not the
+    blue rink. Factored out so the pipeline runs the (expensive) SigLIP pass *once* and shares the
+    per-track embeddings between team clustering and Phase 3 identity re-ID.
+    """
+    present_ids = [t for t in sorted(track_crops) if track_crops.get(t)]
+    flat_crops: list[np.ndarray] = []
+    owners: list[int] = []
+    for tid in present_ids:
+        for crop in track_crops[tid]:
+            flat_crops.append(crop)
+            owners.append(tid)
+    if not flat_crops:
+        return [], np.empty((0, EMBED_DIM), dtype=np.float64)
+    embed_crops = (
+        [background_suppressed_crop(c) for c in flat_crops] if suppress_background else flat_crops
+    )
+    crop_emb = embedder.embed(embed_crops)
+    return present_ids, aggregate_track_embeddings(crop_emb, owners, present_ids)
+
+
+# --------------------------------------------------------------------------------------------
 # Orchestration: crops -> per-track team assignment (used by the pipeline)
 # --------------------------------------------------------------------------------------------
 
@@ -563,6 +597,7 @@ def assign_teams(
     track_crops: dict[int, list[np.ndarray]],
     *,
     suppress_background: bool = True,
+    precomputed: tuple[list[int], np.ndarray] | None = None,
 ) -> TeamAssignment:
     """Assign one stable team id per track from its sampled crops.
 
@@ -575,10 +610,12 @@ def assign_teams(
         torso-cropped and its rink-coloured background neutralised before embedding, so SigLIP keys
         on the kit rather than the blue rink / legs / skin (docs/feature-ideas.md priority #2).
     Either way T0/T1 are anchored to kit colour and a per-track confidence is reported.
+
+    ``precomputed`` optionally supplies ``(present_ids, track_emb)`` from a shared
+    ``embed_tracks`` pass (e.g. when Phase 3 identity also runs), so SigLIP is paid for once. It is
+    only consulted on the embedding path — the kit-colour prior still wins when it fires.
     """
     track_ids = sorted(track_crops)
-    flat_crops: list[np.ndarray] = []
-    owners: list[int] = []
     colors_per_track: list[np.ndarray] = []
     sizes_per_track: list[float] = []
     chroma_per_track: list[np.ndarray] = []
@@ -586,16 +623,13 @@ def assign_teams(
         crops = track_crops[tid]
         if not crops:
             continue
-        for crop in crops:
-            flat_crops.append(crop)
-            owners.append(tid)
         colors_per_track.append(np.median([torso_color_hsv(c) for c in crops], axis=0))
         # Crop pixel area is our scale proxy: the near/far confound we decorrelate the split from.
         sizes_per_track.append(float(np.median([c.shape[0] * c.shape[1] for c in crops])))
         chroma_per_track.append(track_kit_chroma(crops))
 
     present_ids = [t for t in track_ids if track_crops.get(t)]
-    if not flat_crops:
+    if not present_ids:
         return TeamAssignment({}, {}, ClusterInfo(0.0, (0, 0), 0))
 
     # Cheap colour prior first — if a vivid kit team is present, we never pay for SigLIP.
@@ -604,11 +638,12 @@ def assign_teams(
         labels, info = kit
         conf = info.conf
     else:
-        embed_crops = (
-            [background_suppressed_crop(c) for c in flat_crops] if suppress_background else flat_crops
-        )
-        crop_emb = embedder.embed(embed_crops)
-        track_emb = aggregate_track_embeddings(crop_emb, owners, present_ids)
+        if precomputed is not None:
+            present_ids, track_emb = precomputed
+        else:
+            present_ids, track_emb = embed_tracks(
+                embedder, track_crops, suppress_background=suppress_background
+            )
         labels, info = cluster_team_embeddings(track_emb, sizes=np.array(sizes_per_track))
         conf = team_confidence(info, labels)
 

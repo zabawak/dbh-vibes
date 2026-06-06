@@ -13,10 +13,29 @@ on natural footage without ground-truth labels. This directory holds the labels;
     Genuinely ambiguous tracks (a lone red-shirt player, tiny/occluded crops) are left **blank**
     on purpose — the harness scores only the labeled∩predicted overlap rather than guessing.
   - `role` — `player` / `spectator` (all exported crops here are on-court players).
-  - `player` — identity slot for Phase 3 re-ID; blank until that exists.
+  - `player` — identity slot for Phase 3 re-ID. **Phase 3 (`--reid`) now exists and predicts a
+    `player` id**, but this column is still **blank**: the individuals are hard to tell apart by
+    sight in these low-resolution crops, so a confident per-track identity labelling isn't possible
+    from the montages alone (some same-colour tracks even overlap in time, i.e. are different people
+    in matching gear). Until sharper footage or a frame-level review tool exists, Phase 3 is
+    validated by the label-free **temporal-soundness + team-purity** checks in
+    [`../docs/identity-reid.md`](../docs/identity-reid.md) rather than a `player`-column accuracy.
   - `note` — why a row was left blank.
 
 23 of 27 player tracks are team-labeled; 4 are intentionally blank.
+
+## Label-free identity validation (`validate_reid.py`)
+
+Because per-individual identity labels are hard to get from these crops, `validate_reid.py` checks
+the Phase 3 (`--reid`) output without any ground truth: **temporal soundness** (no identity contains
+two time-overlapping tracks — a hard guarantee), **count sanity** (identities between the peak
+on-surface concurrency and the track count), and **merge team-consistency** (a merge shouldn't join
+two tracks the team head called different teams). Validated across five clips of the reference game —
+0 temporal violations, 30/31 merges same-team — see [`../docs/identity-reid.md`](../docs/identity-reid.md).
+
+```bash
+python eval/validate_reid.py runs/<clip>/tracks.csv [...more tracks.csv]
+```
 
 ## Regenerate predictions + score
 

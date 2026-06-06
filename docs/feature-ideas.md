@@ -11,12 +11,12 @@ depends on*. See [architecture.md](architecture.md) for the phased roadmap and
 ## Where we are & what's next (priorities)
 
 Phase 1–2 are in: detection + tracking, surface filter, activity gating, auto-clip, position
-heatmap, team clustering, and now a **labeled eval set + harness**. Team clustering was the prior
-top priority — its run-to-run *instability is fixed* (deterministic; 100% stable on real footage)
-and a **kit-colour prior** handles the common pinnie case. What's left there is *accuracy on
-low-contrast kits* — now **measured, not guessed**, and the first lever against it
-(**background-suppressed crops**) is in and nudged it from 52.2% → 56.5% (see below). The near-term
-priorities are:
+heatmap, team clustering, and a **labeled eval set + harness**. Team clustering's run-to-run
+*instability is fixed* (deterministic; 100% stable on real footage), a **kit-colour prior** handles
+the common pinnie case, and **background-suppressed crops** nudged accuracy 52.2% → 56.5%; what's
+left there is *accuracy on low-contrast kits*. **Phase 3 appearance re-ID is now in too** (priority
+#3 below — per-player identity via constrained agglomerative clustering with a temporal constraint).
+The near-term priorities are:
 
 1. **Labeled eval set + harness** — ✅ **done** *(was the binding constraint).* `evaluate.py` +
    `labeling.py` + the `eval/` set close it: `--label-crops` exports one crop montage per track and
@@ -34,10 +34,18 @@ priorities are:
    gain, not a fix: the low-contrast white/dark kit on this footage is still the hard case (56.5% is
    well short of clean), so appearance alone remains weak here. *(Done; `--no-bg-suppress` ablates
    it. See docs/team-clustering.md.)*
-3. **Phase 3 appearance re-ID (per-player identity)** — *now the top open lever.* The biggest value unlock (true per-player
-   time-on-surface, shifts, +/-). Reuses the now-hardened per-track embedding machinery at finer
-   (per-individual) granularity; the harness already has a `player` (identity) slot ready to score it.
-   *Hard; see architecture.md Phase 3.*
+3. **Phase 3 appearance re-ID (per-player identity)** — ✅ **implemented & validated on real footage.**
+   The biggest value unlock (true per-player time-on-surface, shifts, +/-). `identity.py` reuses the
+   hardened per-track SigLIP embedding machinery at finer granularity, then stitches fragmented
+   tracks into identities with **constrained agglomerative clustering** under a hard *temporal
+   cannot-link* constraint (two tracks overlapping in time can't be one person — which also blocks
+   the look-alike failure mode and floors the identity count near the roster). `--reid` adds a
+   `player` column + **`players.csv`** (true per-player time-on-surface + shift counts).
+   **Validated on the reference clip:** deterministic; 0 temporal violations; forced to roster size
+   (`--roster 13`) every team-checkable merge is same-team (15/15, 0 cross-team, vs ~49% chance) —
+   real identity signal — though a clean per-individual accuracy number still waits on identity
+   ground truth (hard to label by sight at this crop resolution). *(Done; see
+   [docs/identity-reid.md](identity-reid.md).)*
 
 ## Dependency map (what unlocks what)
 
@@ -46,7 +54,7 @@ detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (don
                            ├─ surface filter (done) ─── zone stats (needs homography)
                            ├─ eval harness (done) ──────── measures team/role/identity accuracy
                            ├─ team clustering (stable; kit prior; bg-suppressed crops; acc 56.5%) ─ team stats
-                           ├─ appearance re-ID (Phase 3) ─ per-player stats, +/-, shifts
+                           ├─ appearance re-ID (Phase 3, done) ─ per-player TOI + shifts (players.csv)
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones
 ```

@@ -75,6 +75,26 @@ def build_parser() -> argparse.ArgumentParser:
              "eval harness) to <out>/crops/ and <out>/labels.csv.",
     )
     parser.add_argument(
+        "--reid",
+        action="store_true",
+        help="With --phase2, run Phase 3 appearance re-ID: stitch fragmented tracks into per-player "
+             "identities (adds a `player` column + players.csv with true per-player time-on-surface).",
+    )
+    parser.add_argument(
+        "--roster",
+        type=int,
+        default=None,
+        help="With --reid, pin the number of distinct players (roster size). Default: data-driven "
+             "from --reid-distance and the max number of players on the surface at once.",
+    )
+    parser.add_argument(
+        "--reid-distance",
+        type=float,
+        default=0.35,
+        help="With --reid (and no --roster), cosine-distance threshold for merging track fragments "
+             "into one identity (lower = more, smaller identities; default: 0.35).",
+    )
+    parser.add_argument(
         "--evaluate",
         metavar="LABELS_CSV",
         help="Score predictions against a filled-in labels CSV (team/role/player accuracy) and "
@@ -189,6 +209,9 @@ def _run_phase2(args) -> int:
             write_clips=args.clips,
             export_labels=args.label_crops,
             suppress_background=not args.no_bg_suppress,
+            reid=args.reid,
+            roster_size=args.roster,
+            reid_distance=args.reid_distance,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -214,6 +237,11 @@ def _run_phase2(args) -> int:
                   f"(higher silhouette = cleaner split)")
         for team, secs in sorted(result.team_seconds.items()):
             print(f"  Team {team}: {secs:.0f} active player-seconds")
+    iq = result.identity_quality
+    if iq is not None:
+        sil = f"{iq.silhouette:.2f}" if iq.silhouette == iq.silhouette else "n/a"  # NaN-safe
+        print(f"Identity re-ID: {iq.n_tracks} player tracks -> {iq.n_identities} identities "
+              f"(silhouette {sil}, {iq.n_blocked_merges} concurrent-overlap merge(s) blocked)")
     from dbh_vibes.boxscore import format_boxscore
     print(format_boxscore(result.boxscore))
     print(f"Annotated video: {result.annotated_path}")
@@ -223,6 +251,8 @@ def _run_phase2(args) -> int:
     print(f"Box score:       {result.boxscore_path}")
     if result.clips_dir is not None:
         print(f"Live-play clips: {result.clips_dir}")
+    if result.players_path is not None:
+        print(f"Per-player:      {result.players_path} (identities w/ true per-player time-on-surface)")
     if result.labels_path is not None:
         print(f"Labeling set:    {result.labels_path} (+ crops/) — fill in team/role/player, "
               f"then: python -m dbh_vibes --evaluate {result.labels_path}")
