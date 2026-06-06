@@ -45,6 +45,13 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
   contiguous **live-play segments** (`segments.csv`), bridging brief gaps and dropping blips.
   With `--clips`, also writes each segment as a raw clip under `<out>/clips/` — the basis for
   shift detection and a big compute saving on a mostly-idle full game.
+- **Labeled eval set + harness** (`labeling.py` + `evaluate.py`) — the way we now *measure*
+  accuracy instead of eyeballing it. `--label-crops` exports one crop montage per track plus a
+  pre-filled `labels.csv` template (same pass as `tracks.csv`, so ids line up); a human tags
+  team/role/identity by sight in ~2 minutes; `python -m dbh_vibes --evaluate <labels.csv>` scores
+  the predictions with optimal cluster-label alignment (an arbitrary team `0`/`1` aligns to
+  "white"/"dark"). First measured numbers on the reference clip: **team 52.2% (~chance), role 100%**
+  — see [`eval/README.md`](eval/README.md).
 
 ```bash
 pip install -e ".[phase2]"     # adds transformers + scikit-learn
@@ -53,8 +60,8 @@ python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 
 Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, an enriched
 `tracks.csv` (`team`, `team_conf`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
-spans). Add `--no-siglip` to skip team classification for a faster run, or `--clips` to also
-export per-segment raw clips.
+spans). Add `--no-siglip` to skip team classification for a faster run, `--clips` to also
+export per-segment raw clips, or `--label-crops` to export the labeling set for the eval harness.
 
 ### Auto-clip pre-pass (`--autoclip`) — skip dead time *before* the heavy pass
 

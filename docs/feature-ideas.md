@@ -11,29 +11,35 @@ depends on*. See [architecture.md](architecture.md) for the phased roadmap and
 ## Where we are & what's next (priorities)
 
 Phase 1–2 are in: detection + tracking, surface filter, activity gating, auto-clip, position
-heatmap, and team clustering. Team clustering was the prior **top priority** — its run-to-run
-*instability is now fixed* (deterministic; validated 100% stable on real footage) and a **kit-colour
-prior** handles the common pinnie case (and skips SigLIP). What's left there is *accuracy on
-low-contrast kits*. With that de-risked, the near-term priorities are:
+heatmap, team clustering, and now a **labeled eval set + harness**. Team clustering was the prior
+top priority — its run-to-run *instability is fixed* (deterministic; 100% stable on real footage)
+and a **kit-colour prior** handles the common pinnie case. What's left there is *accuracy on
+low-contrast kits* — and that gap is now **measured, not guessed** (see below). The near-term
+priorities are:
 
-1. **Labeled eval set + harness** *(was "the foundation we're missing" — now the binding
-   constraint).* Team-ID validation could measure stability and internal separation but proved we
-   **cannot measure true accuracy** (team now, identity later) without labels. This unblocks
-   principled iteration on everything below. *Medium.*
-2. **Background-suppressed crops** for team/identity. Person-segment (or tight-torso + rink masking)
-   *before* embedding, so blue rink + legs + skin stop dominating SigLIP — the most promising lever
-   for the white-vs-dark accuracy gap the validation exposed. The colour path already masks the rink;
-   do the same for the embedding. *Low–medium.*
+1. **Labeled eval set + harness** — ✅ **done** *(was the binding constraint).* `evaluate.py` +
+   `labeling.py` + the `eval/` set close it: `--label-crops` exports one crop montage per track and
+   a pre-filled `labels.csv` template; a human tags team/role/identity by sight in ~2 minutes;
+   `--evaluate` scores `tracks.csv` against the labels with optimal cluster-label alignment (so an
+   arbitrary team `0`/`1` aligns to "white"/"dark"). **First measured result on the reference clip:
+   team accuracy 52.2% (12/23) — ~chance — vs role 100% (27/27)**, hard-confirming the suspected
+   accuracy gap. This unblocks principled iteration on everything below. *(Done; see `eval/README.md`.)*
+2. **Background-suppressed crops** for team/identity — *now the top open lever.* Person-segment (or
+   tight-torso + rink masking) *before* embedding, so blue rink + legs + skin stop dominating SigLIP.
+   The colour path already masks the rink; do the same for the embedding. The harness above gives it
+   a number to beat (52.2%). *Low–medium.*
 3. **Phase 3 appearance re-ID (per-player identity)** — the biggest value unlock (true per-player
    time-on-surface, shifts, +/-). Reuses the now-hardened per-track embedding machinery at finer
-   (per-individual) granularity. *Hard; see architecture.md Phase 3.*
+   (per-individual) granularity; the harness already has a `player` (identity) slot ready to score it.
+   *Hard; see architecture.md Phase 3.*
 
 ## Dependency map (what unlocks what)
 
 ```
 detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation
                            ├─ surface filter (done) ─── zone stats (needs homography)
-                           ├─ team clustering (stable; kit-colour prior; accuracy WIP) ─ team stats
+                           ├─ eval harness (done) ──────── measures team/role/identity accuracy
+                           ├─ team clustering (stable; kit-colour prior; accuracy 52% measured) ─ team stats
                            ├─ appearance re-ID (Phase 3) ─ per-player stats, +/-, shifts
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones
@@ -50,10 +56,12 @@ detection** and/or **homography**.
   and writes a `segments.json` manifest with a **compute-savings estimate** (`--cut` slices clips via
   ffmpeg). Big compute savings on a mostly-idle full game and the scaffolding for shift detection.
   *Was: Low difficulty; depended on done pieces.*
-- **Human-in-the-loop identity.** Given no jersey numbers, a tiny labeling step beats perfect
-  automation: show one crop per track cluster, let the user tag "that's player A / team X," then
-  propagate. Turns a hard CV problem into a 2-minute review — and the tags double as the labeled set
-  priority #1 needs. *Low–medium; pairs with Phase 3.*
+- **Human-in-the-loop identity.** *(Labeling half done — `--label-crops` + `labeling.py`.)* Given
+  no jersey numbers, a tiny labeling step beats perfect automation: `--label-crops` already shows
+  one crop montage per track and takes a `team`/`role`/`player` tag in ~2 minutes, and those tags
+  double as the labeled set the eval harness scores against. *What's left:* **propagate** the tags
+  back into the pipeline output (tag a track cluster → apply to all its tracks) rather than only
+  scoring them. *Low–medium; pairs with Phase 3.*
 - **Box-score / stats export.** Emit per-game JSON/CSV (per player: shifts, seconds, team; per
   team: totals) — already partway there in `tracks.csv` (now also `team_conf`). Makes outputs
   consumable. *Low.*
@@ -103,13 +111,17 @@ detection** and/or **homography**.
   events over the annotated video. *Medium; depends on event detection.*
 - **Stat overlays burned into video** — scoreboard, possession bar, player labels. *Low–medium.*
 
-## Evaluation & data (the binding constraint — priority #1)
+## Evaluation & data (was the binding constraint — priority #1, now ✅ done for track-level fields)
 
-- **Labeled dataset + eval harness.** Hand-label a few clips (boxes, team, identity, ball, key
-  events) to (a) fine-tune detectors and (b) *measure* accuracy — detection mAP, MOT/IDF1 for
-  tracking+re-ID, team accuracy, identity accuracy. The team-clustering hardening drove this home:
-  we could prove the split was *stable* and *not driven by crop scale*, and could measure kit
-  accuracy on **tinted** crops (100%), but **true team accuracy on natural footage is unmeasured**
-  for lack of labels — so we still can't tell a good split from a plausible-looking bad one. ~20–40
-  labeled tracks across 2–3 clips would close that. *Medium; unblocks principled iteration on
-  everything above.* (See the validation write-up in team-clustering.md.)
+- **Labeled dataset + eval harness — done (track-level).** `labeling.py` exports a per-track crop
+  montage + a pre-filled `labels.csv` template from the same detect/track pass that writes
+  `tracks.csv` (so ids line up); a human tags team/role/identity by sight; `evaluate.py` scores the
+  predictions with optimal cluster-label alignment (team/identity) or direct equality (role), over
+  the labeled∩predicted overlap. The committed `eval/sample_labels.csv` (23 of 27 player tracks
+  labeled) gives the **first measured numbers on natural footage: team 52.2% (~chance), role 100%** —
+  finally telling a good split from a plausible-looking bad one. Run: `python -m dbh_vibes
+  --evaluate eval/sample_labels.csv --tracks runs/sample/tracks.csv`.
+  - *Still open:* **box-level** ground truth (detection mAP, MOT/IDF1) needs per-frame boxes, not
+    just per-track tags — a heavier labeling step deferred until a detector fine-tune needs it. The
+    harness's `player` column is the **identity** slot, ready to score Phase 3 re-ID the moment it
+    predicts identities. More clips / camera setups would broaden coverage beyond this one clip.

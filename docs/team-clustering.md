@@ -1,7 +1,8 @@
 # Team Clustering — Robustness Needs
 
-Status: **stability hardened and validated on real footage; team _accuracy_ still limited on
-low-contrast kits.** The run-to-run instability that was the stated top priority is fixed — the
+Status: **stability hardened and validated on real footage; team _accuracy_ now *measured* and
+confirmed weak on low-contrast kits (52.2% — ~chance — via the new eval harness, see the bottom of
+this doc and `eval/README.md`).** The run-to-run instability that was the stated top priority is fixed — the
 reworked clusterer is deterministic and gave **100% identical team assignments across repeated
 runs** on the real gameplay clip. But validating on that clip also surfaced a deeper problem the
 original note only speculated about: on this fisheye footage the split is driven by **crop scale
@@ -154,9 +155,13 @@ SigLIP**. A natural pinnie clip is still wanted to confirm end-to-end on untouch
 - **Background-suppressed crops.** The colour path already removes the rink via border-hue masking;
   do the same before *embedding* (person-segment or tight torso box) so blue rink + legs + skin
   stop dominating SigLIP — the most promising lever for the white-vs-dark case.
-- **A small labeled set** (~20–40 tracks across 2–3 clips, different camera setups) — without it we
-  can only measure internal separation (silhouette / scale-decorrelation / kit-accuracy on tinted
-  data), not true team accuracy on natural footage.
+- **A small labeled set — done.** `eval/sample_labels.csv` hand-labels 23 of 27 player tracks on
+  the reference clip; the harness (`evaluate.py`, `python -m dbh_vibes --evaluate`) now reports the
+  **first true team accuracy on natural footage: 52.2% (12/23) — ~chance**, vs role 100% (27/27).
+  This is the hard confirmation of the gap that internal signals (silhouette / scale-decorrelation /
+  tinted-kit accuracy) could only hint at: the white/dark split here is no better than a coin flip.
+  52.2% is the baseline the background-suppressed-crop lever must beat. More clips / camera setups
+  would broaden coverage. See `eval/README.md` for the recipe.
 - **Robustness checks**: different lighting, a both-teams-similar-colours clip (expected failure —
   document it), and the goalie-heavy frames that tipped the original run.
 
