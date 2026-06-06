@@ -60,7 +60,8 @@ spans; `--clips` also exports per-segment raw clips). Pipeline lives in
   clusterer was hardened to fix run-to-run instability (deterministic PCA not UMAP, over-segment then
   merge by size so goalies/refs can't form a team, colour-anchored stable labels, scale-decorrelation)
   and is now **run-to-run stable (validated 100% on real footage)** — but team **accuracy** on
-  low-contrast kits is still weak; see [team-clustering.md](team-clustering.md).
+  low-contrast kits is still weak, now **measured at 52.2% (~chance)** by the eval harness; see
+  [team-clustering.md](team-clustering.md).
 - **Position heatmap** (`spatial.py`) — accumulates foot-point density into a colored overlay.
   Kept in **image space**: a single planar homography to a top-down view is unreliable on this
   fixed fisheye with the near boards occluded, so an honest image-space map is the base for a
@@ -88,6 +89,16 @@ spans; `--clips` also exports per-segment raw clips). Pipeline lives in
   follows the camera if its position changes — no fixed polygon, no recalibration. Validated to
   re-derive correctly under a simulated camera move. Disable with `--no-surface-filter`. Tracks
   are tagged `player`/`spectator` in `tracks.csv`; only players get teams and time totals.
+- **Labeled eval set + harness** (`labeling.py` + `evaluate.py`) — the way accuracy is now
+  *measured* rather than eyeballed (this was the project's stated binding constraint). `--label-crops`
+  exports one crop montage per track plus a pre-filled `labels.csv` template from the *same*
+  detect/track pass that writes `tracks.csv`, so track ids line up. A human tags team/role/identity
+  by sight in ~2 minutes; `python -m dbh_vibes --evaluate <labels.csv>` scores the predictions —
+  **optimal cluster-label alignment** for team/identity (an arbitrary `0`/`1` aligns to
+  "white"/"dark"), direct equality for role — over the labeled∩predicted overlap. The committed
+  `eval/sample_labels.csv` gives the first measured numbers on natural footage: **team 52.2%
+  (~chance), role 100%**. Pure-numpy metric core, unit-tested in `tests/test_evaluate.py`; see
+  [`../eval/README.md`](../eval/README.md).
 
 ### Still open in Phase 2
 - **Team clustering — stability fixed and validated; accuracy still limited on low-contrast kits.**
@@ -99,9 +110,11 @@ spans; `--clips` also exports per-segment raw clips). Pipeline lives in
   real clip: **100% identical assignments across repeated runs** (instability fixed). But the same
   validation showed the split was driven by **crop near/far scale, not kit** (top PC ~0.86 correlated
   with crop area); decorrelation removes that confound, yet the low-contrast white/dark kits on this
-  footage still don't separate by appearance. **Team accuracy on low-contrast kits remains open** —
-  next is a kit-colour/pinnie prior and background-suppressed crops, plus a labeled set to measure
-  it. Full write-up + numbers in **[team-clustering.md](team-clustering.md)**.
+  footage still don't separate by appearance. The eval harness (above) now **measures** this:
+  **team accuracy 52.2% (~chance)** on the reference clip — the gap is confirmed, not just suspected.
+  The kit-colour/pinnie prior is in; the top remaining lever is **background-suppressed crops**
+  (mask the rink/legs/skin before embedding), with 52.2% as the number to beat. Full write-up +
+  numbers in **[team-clustering.md](team-clustering.md)**.
 - **Fine-tune a ball-hockey detector** for `ball`, `goalie`, `referee` classes (needs labeled
   clips; reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset) where it transfers).
 - **Calibrated top-down rink map** once camera intrinsics/keypoints are available (fisheye
@@ -124,6 +137,10 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
 - **How this differs from team clustering.** Team = coarse (2 groups by kit); identity = fine
   (one cluster per person, using the *per-player* gear differences as the signal). Identity is
   the harder, more valuable target.
+- **Already measurable.** The eval harness (`evaluate.py`) has a `player` (identity) column ready:
+  the same labeling montages can be tagged with per-player ids, and `--evaluate` will score an
+  identity clustering with the same optimal-alignment metric used for teams — so Phase 3 lands with
+  a number from day one instead of being eyeballed.
 - **Known failure mode to document.** If two players wear near-identical gear, appearance alone
   can't separate them — fall back on spatiotemporal continuity (motion/position across short
   gaps) and, where it exists, any distinguishing cue. A real league with matching uniforms would

@@ -38,7 +38,8 @@ priorities are:
 ```
 detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation
                            ├─ surface filter (done) ─── zone stats (needs homography)
-                           ├─ team clustering (stable; kit-colour prior; accuracy WIP) ─ team stats
+                           ├─ eval harness (done) ──────── measures team/role/identity accuracy
+                           ├─ team clustering (stable; kit-colour prior; accuracy 52% measured) ─ team stats
                            ├─ appearance re-ID (Phase 3) ─ per-player stats, +/-, shifts
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones
@@ -55,10 +56,12 @@ detection** and/or **homography**.
   and writes a `segments.json` manifest with a **compute-savings estimate** (`--cut` slices clips via
   ffmpeg). Big compute savings on a mostly-idle full game and the scaffolding for shift detection.
   *Was: Low difficulty; depended on done pieces.*
-- **Human-in-the-loop identity.** Given no jersey numbers, a tiny labeling step beats perfect
-  automation: show one crop per track cluster, let the user tag "that's player A / team X," then
-  propagate. Turns a hard CV problem into a 2-minute review — and the tags double as the labeled set
-  priority #1 needs. *Low–medium; pairs with Phase 3.*
+- **Human-in-the-loop identity.** *(Labeling half done — `--label-crops` + `labeling.py`.)* Given
+  no jersey numbers, a tiny labeling step beats perfect automation: `--label-crops` already shows
+  one crop montage per track and takes a `team`/`role`/`player` tag in ~2 minutes, and those tags
+  double as the labeled set the eval harness scores against. *What's left:* **propagate** the tags
+  back into the pipeline output (tag a track cluster → apply to all its tracks) rather than only
+  scoring them. *Low–medium; pairs with Phase 3.*
 - **Box-score / stats export.** Emit per-game JSON/CSV (per player: shifts, seconds, team; per
   team: totals) — already partway there in `tracks.csv` (now also `team_conf`). Makes outputs
   consumable. *Low.*
