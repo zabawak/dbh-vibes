@@ -27,6 +27,7 @@ import supervision as sv
 from ultralytics import YOLO
 
 from dbh_vibes.activity import ActivitySummary, detect_activity, foot_points
+from dbh_vibes.boxscore import PlayerLine, build_boxscore, write_boxscore_json
 from dbh_vibes.segments import (
     PlaySegment,
     frame_segment_index,
@@ -86,6 +87,7 @@ class Phase2Result:
     heatmap_path: Path
     csv_path: Path
     segments_path: Path
+    boxscore_path: Path
     fps: float
     frame_count: int
     activity: ActivitySummary
@@ -95,6 +97,7 @@ class Phase2Result:
     n_spectators: int
     surface_found: bool
     segments: list[PlaySegment]
+    boxscore: dict
     clips_dir: Path | None = None
     team_quality: TeamQuality | None = None
     labels_path: Path | None = None
@@ -125,6 +128,7 @@ def run_phase2(
     heatmap_path = out_dir / "heatmap.jpg"
     csv_path = out_dir / "tracks.csv"
     segments_path = out_dir / "segments.csv"
+    boxscore_path = out_dir / "boxscore.json"
 
     info = sv.VideoInfo.from_video_path(str(source))
     fps = float(info.fps)
@@ -285,14 +289,38 @@ def run_phase2(
 
     # ---- Stats output ----
     team_seconds = _write_csv(csv_path, tracks, players, fps)
+    boxscore = build_boxscore(
+        [_player_line(tracks[t]) for t in players],
+        fps=fps,
+        frame_count=frame_count,
+        n_spectators=len(tracks) - len(players),
+        live_seconds=total_live_seconds(segments, fps),
+        n_segments=len(segments),
+        active_fraction=activity.active_fraction,
+        surface_found=surface is not None,
+    )
+    write_boxscore_json(boxscore_path, boxscore)
 
     return Phase2Result(
         annotated_path=annotated_path, heatmap_path=heatmap_path, csv_path=csv_path,
-        segments_path=segments_path, fps=fps, frame_count=frame_count, activity=activity,
+        segments_path=segments_path, boxscore_path=boxscore_path, fps=fps,
+        frame_count=frame_count, activity=activity,
         tracks=tracks, team_seconds=team_seconds, n_players=len(players),
         n_spectators=len(tracks) - len(players), surface_found=surface is not None,
-        segments=segments, clips_dir=clips_dir, team_quality=team_quality,
-        labels_path=labels_path,
+        segments=segments, boxscore=boxscore, clips_dir=clips_dir,
+        team_quality=team_quality, labels_path=labels_path,
+    )
+
+
+def _player_line(ts: TrackStat) -> PlayerLine:
+    """Project a pipeline ``TrackStat`` onto the box-score's plain-int input."""
+    return PlayerLine(
+        track_id=ts.track_id,
+        team=ts.team,
+        frames_seen=ts.frames_seen,
+        active_frames=ts.active_frames,
+        on_surface_frames=ts.on_surface_frames,
+        median_area_px=int(np.median(ts.areas)) if ts.areas else 0,
     )
 
 

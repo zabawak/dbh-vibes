@@ -49,8 +49,9 @@ python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
 Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`, an enriched
-`tracks.csv` (adds `team`, `team_conf`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
-spans; `--clips` also exports per-segment raw clips). Pipeline lives in
+`tracks.csv` (adds `team`, `team_conf`, `active_seconds`, `median_area_px`), `segments.csv` (live-play
+spans; `--clips` also exports per-segment raw clips), and `boxscore.json` (a consumable per-game
+roll-up: game header + per-team totals + per-player table). Pipeline lives in
 `src/dbh_vibes/pipeline.py` (two-pass: detect/track once → fit teams + activity + segments → render).
 
 - **SigLIP team classification** (`team_siglip.py`) — embeds player crops with the SigLIP vision
@@ -83,6 +84,13 @@ spans; `--clips` also exports per-segment raw clips). Pipeline lives in
     `--min-segment`, `--merge-gap`, `--pad`. The expand-to-full-resolution + segment + pad logic is
     pure and unit-tested in `tests/test_autoclip.py`. Validated on the reference footage: a
     bench-break clip → 0 segments (skip 100%), live gameplay → ~skip 3%.
+- **Box-score / stats export** (`boxscore.py`) — rolls the scattered per-track numbers into one
+  consumable `boxscore.json` (game header + per-team totals + a per-player table, most-active
+  first) and a compact text table in the console summary. Deliberately **per-track**, not per-
+  *player*: with no jersey numbers a re-entering player is still two tracks (same caveat as
+  `tracks.csv`), so true per-player shift counts wait on Phase 3 identity; team totals sum over
+  tracks and are robust to the fragmentation. Pure-stdlib core, unit-tested in
+  `tests/test_boxscore.py`.
 - **Playing-surface filter** (`surface.py`) — separates on-court players from bench/spectators
   by keeping only detections whose foot point lands on the playing surface. The surface is
   **auto-derived per run** from a time-median of the footage + court-color segmentation, so it

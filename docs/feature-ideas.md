@@ -62,9 +62,13 @@ detection** and/or **homography**.
   double as the labeled set the eval harness scores against. *What's left:* **propagate** the tags
   back into the pipeline output (tag a track cluster → apply to all its tracks) rather than only
   scoring them. *Low–medium; pairs with Phase 3.*
-- **Box-score / stats export.** Emit per-game JSON/CSV (per player: shifts, seconds, team; per
-  team: totals) — already partway there in `tracks.csv` (now also `team_conf`). Makes outputs
-  consumable. *Low.*
+- **Box-score / stats export** *(done — `boxscore.py`).* Rolls the scattered per-track numbers into
+  one consumable artifact: a `boxscore.json` (game header + per-team totals + a per-player table,
+  most-active first) plus a compact text table in the `--phase2` console summary. Honest scope:
+  **per-track**, not yet per-*player* — with no jersey numbers a player who re-enters is still two
+  tracks (same caveat as `tracks.csv`), so true shift counts wait on Phase 3 identity; team totals
+  sum over tracks and are robust to that. Pure-stdlib core, unit-tested in `tests/test_boxscore.py`.
+  *Was: Low difficulty; already partway there in `tracks.csv`.*
 - **Capture-side levers (no code).** Distinct **colored pinnies** are now the single biggest team-ID
   lever: the kit-colour prior (`team_siglip.detect_kit_split`) splits cleanly on a vivid kit and
   skips SigLIP entirely, where low-contrast white/dark kits still defeat the embedding. A higher,

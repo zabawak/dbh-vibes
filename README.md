@@ -45,6 +45,10 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
   contiguous **live-play segments** (`segments.csv`), bridging brief gaps and dropping blips.
   With `--clips`, also writes each segment as a raw clip under `<out>/clips/` — the basis for
   shift detection and a big compute saving on a mostly-idle full game.
+- **Box-score / stats export** (`boxscore.py`) — rolls the scattered per-track numbers into one
+  consumable `boxscore.json` (game header + per-team totals + a per-player table) and prints a
+  compact text table. Per-track today, not yet per-player (no jersey numbers → true shift counts
+  wait on Phase 3 identity); team totals are robust to the track fragmentation.
 - **Labeled eval set + harness** (`labeling.py` + `evaluate.py`) — the way we now *measure*
   accuracy instead of eyeballing it. `--label-crops` exports one crop montage per track plus a
   pre-filled `labels.csv` template (same pass as `tracks.csv`, so ids line up); a human tags
@@ -59,9 +63,10 @@ python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
 Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, an enriched
-`tracks.csv` (`team`, `team_conf`, `active_seconds`, `median_area_px`), and `segments.csv` (live-play
-spans). Add `--no-siglip` to skip team classification for a faster run, `--clips` to also
-export per-segment raw clips, or `--label-crops` to export the labeling set for the eval harness.
+`tracks.csv` (`team`, `team_conf`, `active_seconds`, `median_area_px`), `segments.csv` (live-play
+spans), and `boxscore.json` (per-game roll-up). Add `--no-siglip` to skip team classification for a
+faster run, `--clips` to also export per-segment raw clips, or `--label-crops` to export the
+labeling set for the eval harness.
 
 ### Auto-clip pre-pass (`--autoclip`) — skip dead time *before* the heavy pass
 
