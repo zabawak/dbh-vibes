@@ -90,6 +90,31 @@ label by sight in these low-resolution crops (the same root cause that caps team
 > white players merged would still be "team-pure". It bounds the error from above, not below. A true
 > identity-accuracy number waits on per-individual labels (see *What would move identity accuracy*).
 
+### Generalisation — four more clips from across the game
+
+To check it isn't tuned to one clip, four more 30 s clips were cut from different points of the same
+38-min game (`-ss 420 / 900 / 1700 / 2050`, all live play) and run with the default `--reid`. The
+label-free checks (`eval/validate_reid.py`: temporal soundness, count sanity, and merge
+team-consistency against the *predicted* teams since these clips have no hand labels):
+
+| clip | tracks → identities | concurrency floor | temporal viol. | merged pairs (same / cross-team) |
+|---|---|---|---|---|
+| `clip_420`  | 39 → 34 | 12 | 0 ✅ | 7 / **7 same**, 0 cross |
+| `clip_900`  | 43 → 34 | 12 | 0 ✅ | 11 / 10 same, **1 cross\*** |
+| `clip_1700` | 40 → 36 | 10 | 0 ✅ | 4 / **4 same**, 0 cross |
+| `clip_2050` | 33 → 28 | 10 | 0 ✅ | 6 / **6 same**, 0 cross |
+
+Across all four (plus the reference clip): **0 temporal violations**, every identity count sits
+between its concurrency floor and the track count, and **30 of 31 team-checkable merges are
+same-team**. The lone "cross-team" merge (`clip_900`) is itself instructive: it joined two
+disjoint-in-time white-shirted fragments (tracks 90 & 151) that *look like the same player* by eye —
+the "cross-team" flag comes from the **team classifier** mislabelling track 90 (its `team_conf` was
+0.49, a coin flip), not from a re-ID error. So re-ID was actually *more* robust than the weak team
+head on that borderline track. The behaviour is consistent clip-to-clip: sound, conservative, and
+carrying real signal — re-run cheaply with `python eval/validate_reid.py runs/<clip>/tracks.csv`.
+
+\* a team-label error on a `team_conf 0.49` fragment, not an identity error (see above).
+
 ### What would move identity accuracy
 
 - **A real re-ID embedding** (OSNet/torchreid) instead of repurposed SigLIP — trained to separate

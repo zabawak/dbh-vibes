@@ -24,6 +24,19 @@ on natural footage without ground-truth labels. This directory holds the labels;
 
 23 of 27 player tracks are team-labeled; 4 are intentionally blank.
 
+## Label-free identity validation (`validate_reid.py`)
+
+Because per-individual identity labels are hard to get from these crops, `validate_reid.py` checks
+the Phase 3 (`--reid`) output without any ground truth: **temporal soundness** (no identity contains
+two time-overlapping tracks — a hard guarantee), **count sanity** (identities between the peak
+on-surface concurrency and the track count), and **merge team-consistency** (a merge shouldn't join
+two tracks the team head called different teams). Validated across five clips of the reference game —
+0 temporal violations, 30/31 merges same-team — see [`../docs/identity-reid.md`](../docs/identity-reid.md).
+
+```bash
+python eval/validate_reid.py runs/<clip>/tracks.csv [...more tracks.csv]
+```
+
 ## Regenerate predictions + score
 
 ```bash
