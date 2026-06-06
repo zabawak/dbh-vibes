@@ -28,6 +28,7 @@ from ultralytics import YOLO
 
 from dbh_vibes.activity import ActivitySummary, detect_activity, foot_points
 from dbh_vibes.boxscore import PlayerLine, build_boxscore, write_boxscore_json
+from dbh_vibes.identity import assign_identities
 from dbh_vibes.segments import (
     PlaySegment,
     frame_segment_index,
@@ -37,7 +38,7 @@ from dbh_vibes.segments import (
 )
 from dbh_vibes.spatial import PositionHeatmap
 from dbh_vibes.surface import estimate_surface_mask, on_surface
-from dbh_vibes.team_siglip import SiglipTeamClassifier, assign_teams, crop_box
+from dbh_vibes.team_siglip import SiglipTeamClassifier, assign_teams, crop_box, embed_tracks
 
 PERSON_CLASS_ID = 0
 TEAM_COLORS_BGR = {0: (60, 220, 60), 1: (60, 60, 240)}  # green / red
@@ -56,6 +57,8 @@ class TrackStat:
     areas: list[float] = field(default_factory=list)
     team: int | None = None
     team_conf: float | None = None   # confidence in the team assignment ([0,1]); label-free
+    player: int | None = None        # Phase 3 identity: tracks of one person share this id
+    player_conf: float | None = None # confidence in the identity assignment ([0,1]); label-free
 
     def on_surface_frac(self) -> float:
         return self.on_surface_frames / self.frames_seen if self.frames_seen else 0.0
@@ -82,6 +85,22 @@ class TeamQuality:
 
 
 @dataclass
+class IdentityQuality:
+    """Label-free quality of the Phase 3 identity clustering.
+
+    n_identities: distinct people the player tracks were stitched into.
+    n_tracks: player tracks fed into the clustering (fragments before stitching).
+    silhouette: separation of the identity labelling ([-1,1]; NaN when undefined).
+    n_blocked_merges: merges the temporal cannot-link constraint vetoed (look-alikes kept apart).
+    """
+
+    n_identities: int
+    n_tracks: int
+    silhouette: float
+    n_blocked_merges: int
+
+
+@dataclass
 class Phase2Result:
     annotated_path: Path
     heatmap_path: Path
@@ -101,6 +120,8 @@ class Phase2Result:
     clips_dir: Path | None = None
     team_quality: TeamQuality | None = None
     labels_path: Path | None = None
+    identity_quality: IdentityQuality | None = None
+    players_path: Path | None = None
 
 
 def run_phase2(
@@ -118,6 +139,9 @@ def run_phase2(
     write_clips: bool = False,
     export_labels: bool = False,
     suppress_background: bool = True,
+    reid: bool = False,
+    roster_size: int | None = None,
+    reid_distance: float = 0.35,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
     source = Path(source)
@@ -201,14 +225,25 @@ def run_phase2(
     segments = segment_play(activity.per_frame_active, fps)
     write_segments_csv(segments_path, segments, fps)
 
-    # ---- Team assignment (per track, hardened clustering) — players only ----
+    # ---- Team assignment + Phase 3 identity (per track, hardened clustering) — players only ----
+    # Both consume the *same* per-track SigLIP embedding, so the expensive embedding pass is run at
+    # most once: identity always needs it; team needs it only when the kit-colour prior declines.
     team_quality: TeamQuality | None = None
-    if use_siglip_teams:
-        player_crops = {t: track_crops[t] for t in players if track_crops.get(t)}
-        if player_crops:
-            embedder = SiglipTeamClassifier()
-            assignment = assign_teams(
+    identity_quality: IdentityQuality | None = None
+    player_crops = {t: track_crops[t] for t in players if track_crops.get(t)}
+    if (use_siglip_teams or reid) and player_crops:
+        embedder = SiglipTeamClassifier()
+        precomputed = None
+        if reid:  # identity can't be done by colour alone — embed up front and share with team
+            present_ids, track_emb = embed_tracks(
                 embedder, player_crops, suppress_background=suppress_background
+            )
+            precomputed = (present_ids, track_emb)
+
+        if use_siglip_teams:
+            assignment = assign_teams(
+                embedder, player_crops, suppress_background=suppress_background,
+                precomputed=precomputed,
             )
             for tid, team in assignment.track_team.items():
                 tracks[tid].team = team
@@ -218,6 +253,22 @@ def run_phase2(
                 team_sizes=assignment.team_sizes,
                 n_micro=assignment.info.n_micro,
                 method=assignment.info.method,
+            )
+
+        if reid and present_ids:
+            spans = {t: (tracks[t].first_frame, tracks[t].last_frame) for t in present_ids}
+            id_assignment = assign_identities(
+                track_emb, present_ids, spans,
+                n_identities=roster_size, distance_threshold=reid_distance,
+            )
+            for tid, pid in id_assignment.track_identity.items():
+                tracks[tid].player = pid
+                tracks[tid].player_conf = id_assignment.track_conf.get(tid)
+            identity_quality = IdentityQuality(
+                n_identities=id_assignment.n_identities,
+                n_tracks=len(present_ids),
+                silhouette=id_assignment.info.silhouette,
+                n_blocked_merges=id_assignment.info.n_blocked_merges,
             )
 
     # ---- Labeling set (optional): per-track crop montages + a labels.csv template ----
@@ -292,6 +343,10 @@ def run_phase2(
 
     # ---- Stats output ----
     team_seconds = _write_csv(csv_path, tracks, players, fps)
+    players_path: Path | None = None
+    if reid:
+        players_path = out_dir / "players.csv"
+        _write_players_csv(players_path, tracks, players, fps)
     boxscore = build_boxscore(
         [_player_line(tracks[t]) for t in players],
         fps=fps,
@@ -312,6 +367,7 @@ def run_phase2(
         n_spectators=len(tracks) - len(players), surface_found=surface is not None,
         segments=segments, boxscore=boxscore, clips_dir=clips_dir,
         team_quality=team_quality, labels_path=labels_path,
+        identity_quality=identity_quality, players_path=players_path,
     )
 
 
@@ -332,8 +388,9 @@ def _write_csv(
 ) -> dict[int, float]:
     """Write per-track stats; return per-team active-play seconds aggregate (players only)."""
     team_seconds: dict[int, float] = defaultdict(float)
-    fields = ["track_id", "role", "team", "team_conf", "first_frame", "last_frame", "frames_seen",
-              "seconds_on_surface", "active_seconds", "on_surface_frac", "median_area_px"]
+    fields = ["track_id", "role", "team", "team_conf", "player", "player_conf", "first_frame",
+              "last_frame", "frames_seen", "seconds_on_surface", "active_seconds",
+              "on_surface_frac", "median_area_px"]
     with csv_path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -347,6 +404,9 @@ def _write_csv(
                 "role": "player" if is_player else "spectator",
                 "team": ts.team if (is_player and ts.team is not None) else "",
                 "team_conf": round(ts.team_conf, 2) if (is_player and ts.team_conf is not None) else "",
+                "player": ts.player if (is_player and ts.player is not None) else "",
+                "player_conf": round(ts.player_conf, 2)
+                if (is_player and ts.player_conf is not None) else "",
                 "first_frame": ts.first_frame,
                 "last_frame": ts.last_frame,
                 "frames_seen": ts.frames_seen,
@@ -356,3 +416,51 @@ def _write_csv(
                 "median_area_px": int(np.median(ts.areas)) if ts.areas else 0,
             })
     return dict(team_seconds)
+
+
+def _write_players_csv(
+    players_path: Path, tracks: dict[int, TrackStat], players: set[int], fps: float
+) -> None:
+    """Roll fragmented tracks up to per-player identities — the true per-player time-on-surface.
+
+    Each identity sums the time of all its track fragments. ``n_shifts`` is the fragment count (one
+    contiguous on-surface track ≈ one shift), the headline Phase 3 stat that per-track output can't
+    give. ``team`` is the majority vote of the identity's fragments (weighted by frames). Rows are
+    most-active first; tracks without an identity (re-ID off, or unembeddable) are skipped.
+    """
+    by_player: dict[int, list[TrackStat]] = defaultdict(list)
+    for tid in players:
+        ts = tracks[tid]
+        if ts.player is not None:
+            by_player[ts.player].append(ts)
+
+    def team_vote(frags: list[TrackStat]) -> int | str:
+        votes: dict[int, int] = defaultdict(int)
+        for f in frags:
+            if f.team is not None:
+                votes[f.team] += f.frames_seen
+        return max(votes, key=votes.get) if votes else ""
+
+    fields = ["player", "team", "n_shifts", "track_ids", "frames_seen", "seconds_on_surface",
+              "active_seconds", "first_frame", "last_frame", "mean_conf"]
+    rows = []
+    for pid, frags in by_player.items():
+        active_s = round(sum(f.active_frames for f in frags) / fps, 2) if fps else 0.0
+        confs = [f.player_conf for f in frags if f.player_conf is not None]
+        rows.append({
+            "player": pid,
+            "team": team_vote(frags),
+            "n_shifts": len(frags),
+            "track_ids": " ".join(str(f.track_id) for f in sorted(frags, key=lambda f: f.first_frame)),
+            "frames_seen": sum(f.frames_seen for f in frags),
+            "seconds_on_surface": round(sum(f.frames_seen for f in frags) / fps, 2) if fps else 0.0,
+            "active_seconds": active_s,
+            "first_frame": min(f.first_frame for f in frags),
+            "last_frame": max(f.last_frame for f in frags),
+            "mean_conf": round(sum(confs) / len(confs), 2) if confs else "",
+        })
+    rows.sort(key=lambda r: r["active_seconds"], reverse=True)
+    with players_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)

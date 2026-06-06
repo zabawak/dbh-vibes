@@ -71,6 +71,29 @@ spans), and `boxscore.json` (per-game roll-up). Add `--no-siglip` to skip team c
 faster run, `--clips` to also export per-segment raw clips, or `--label-crops` to export the
 labeling set for the eval harness.
 
+## What works today (Phase 3 — per-player identity)
+
+Detection + ByteTrack give a track id that survives only one continuous on-surface stretch, so one
+person fragments into many track ids (27 tracks for ~13 people on the reference clip). **Appearance
+re-ID** (`identity.py`, `--reid`) stitches the fragments back into per-player **identities** so we
+get *true per-player* time-on-surface and shift counts — the headline goal.
+
+- Reuses the **same per-track SigLIP embedding** as team clustering (background-suppressed crops),
+  shared so SigLIP runs once, then clusters tracks with **constrained agglomerative clustering**
+  under a hard **temporal cannot-link** (two tracks overlapping in time can't be one person — which
+  also blocks the look-alike failure mode and floors the identity count near the roster).
+- Adds a `player`/`player_conf` column to `tracks.csv` and writes **`players.csv`**: one row per
+  identity with summed time-on-surface, `n_shifts`, the constituent track ids, and team.
+- **Validated on real footage:** deterministic; 0 temporal violations; forced to roster size
+  (`--roster 13`) every team-checkable merge is same-team (15/15, 0 cross-team, vs ~49% chance) —
+  real identity signal. A clean per-individual accuracy number still waits on identity ground truth
+  (hard to label by sight at this crop resolution). See [`docs/identity-reid.md`](docs/identity-reid.md).
+
+```bash
+python -m dbh_vibes data/game.mp4 --out runs/game --phase2 --reid            # data-driven count
+python -m dbh_vibes data/game.mp4 --out runs/game --phase2 --reid --roster 13  # pin roster size
+```
+
 ### Auto-clip pre-pass (`--autoclip`) — skip dead time *before* the heavy pass
 
 A full game is mostly dead time, so running the whole pipeline over all 38 minutes is wasteful.

@@ -13,7 +13,13 @@ on natural footage without ground-truth labels. This directory holds the labels;
     Genuinely ambiguous tracks (a lone red-shirt player, tiny/occluded crops) are left **blank**
     on purpose — the harness scores only the labeled∩predicted overlap rather than guessing.
   - `role` — `player` / `spectator` (all exported crops here are on-court players).
-  - `player` — identity slot for Phase 3 re-ID; blank until that exists.
+  - `player` — identity slot for Phase 3 re-ID. **Phase 3 (`--reid`) now exists and predicts a
+    `player` id**, but this column is still **blank**: the individuals are hard to tell apart by
+    sight in these low-resolution crops, so a confident per-track identity labelling isn't possible
+    from the montages alone (some same-colour tracks even overlap in time, i.e. are different people
+    in matching gear). Until sharper footage or a frame-level review tool exists, Phase 3 is
+    validated by the label-free **temporal-soundness + team-purity** checks in
+    [`../docs/identity-reid.md`](../docs/identity-reid.md) rather than a `player`-column accuracy.
   - `note` — why a row was left blank.
 
 23 of 27 player tracks are team-labeled; 4 are intentionally blank.
