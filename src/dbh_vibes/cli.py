@@ -95,6 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
              "into one identity (lower = more, smaller identities; default: 0.35).",
     )
     parser.add_argument(
+        "--shift-gap",
+        type=float,
+        default=3.0,
+        help="With --reid, on-surface gap (seconds) that separates two shifts. Fragments of one "
+             "player closer than this are stitched into one shift (occlusion / tracker re-acquire); "
+             "a longer gap is a bench trip → a new shift (default: 3).",
+    )
+    parser.add_argument(
         "--evaluate",
         metavar="LABELS_CSV",
         help="Score predictions against a filled-in labels CSV (team/role/player accuracy) and "
@@ -212,6 +220,7 @@ def _run_phase2(args) -> int:
             reid=args.reid,
             roster_size=args.roster,
             reid_distance=args.reid_distance,
+            shift_gap_seconds=args.shift_gap,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -242,6 +251,10 @@ def _run_phase2(args) -> int:
         sil = f"{iq.silhouette:.2f}" if iq.silhouette == iq.silhouette else "n/a"  # NaN-safe
         print(f"Identity re-ID: {iq.n_tracks} player tracks -> {iq.n_identities} identities "
               f"(silhouette {sil}, {iq.n_blocked_merges} concurrent-overlap merge(s) blocked)")
+        if result.n_shifts is not None:
+            print(f"Shifts: {iq.n_tracks} track fragments -> {result.n_shifts} true on-surface "
+                  f"shifts across {iq.n_identities} players "
+                  f"(short tracker gaps stitched; bench-length gaps split)")
     from dbh_vibes.boxscore import format_boxscore
     print(format_boxscore(result.boxscore))
     print(f"Annotated video: {result.annotated_path}")
@@ -253,6 +266,8 @@ def _run_phase2(args) -> int:
         print(f"Live-play clips: {result.clips_dir}")
     if result.players_path is not None:
         print(f"Per-player:      {result.players_path} (identities w/ true per-player time-on-surface)")
+    if result.shifts_path is not None:
+        print(f"Per-shift:       {result.shifts_path} (one row per on-surface shift)")
     if result.labels_path is not None:
         print(f"Labeling set:    {result.labels_path} (+ crops/) — fill in team/role/player, "
               f"then: python -m dbh_vibes --evaluate {result.labels_path}")

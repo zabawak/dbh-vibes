@@ -46,15 +46,28 @@ The near-term priorities are:
    real identity signal — though a clean per-individual accuracy number still waits on identity
    ground truth (hard to label by sight at this crop resolution). *(Done; see
    [docs/identity-reid.md](identity-reid.md).)*
+4. **Shift detection (per-player time-on-surface broken into shifts)** — ✅ **implemented & validated
+   on real footage.** The headline "time on ice" stat, now unblocked by Phase 3 identity. `shifts.py`
+   (`detect_shifts`, emitted with `--reid`) segments each identity's timeline into **true on-surface
+   shifts**: it stitches the identity's fragmented track spans, **bridging short temporal gaps** (an
+   occlusion / tracker re-acquire → same shift) and **splitting on a bench-length gap** (→ a new
+   shift). Because the Phase 2 surface filter already drops off-surface (bench) detections, a bench
+   trip is a long dark stretch in the identity's on-surface timeline — so the *temporal gap is the
+   bench signal*, no hand-drawn bench polygon needed. This **replaces the old `n_shifts = fragment
+   count`**, which over-counted on every brief tracker dropout of a still-on-surface player. Writes
+   `shifts.csv` (one row per shift) and adds `n_shifts` (true) / `n_fragments` (raw) / `shift_seconds`
+   / `longest_shift_s` / `avg_shift_s` to `players.csv`; `--shift-gap` tunes the bench-vs-occlusion
+   threshold. Pure-stdlib core, unit-tested in `tests/test_shifts.py`. *(Done; see
+   [docs/architecture.md](architecture.md) Phase 3.)*
 
 ## Dependency map (what unlocks what)
 
 ```
-detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation
+detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation (done)
                            ├─ surface filter (done) ─── zone stats (needs homography)
                            ├─ eval harness (done) ──────── measures team/role/identity accuracy
                            ├─ team clustering (stable; kit prior; bg-suppressed crops; acc 56.5%) ─ team stats
-                           ├─ appearance re-ID (Phase 3, done) ─ per-player TOI + shifts (players.csv)
+                           ├─ appearance re-ID (Phase 3, done) ─ per-player TOI + shifts (done: players.csv + shifts.csv)
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones
 ```
@@ -91,8 +104,11 @@ detection** and/or **homography**.
 
 ## Stats & analytics (the end product)
 
-- **Shift / time-on-surface per player** — the headline "time on ice." *Depends on Phase 3 identity
-  + bench-zone detection.*
+- **Shift / time-on-surface per player** — the headline "time on ice." *(Done — `shifts.py`,
+  `--reid`.)* Identity (Phase 3) plus gap-based shift segmentation: the surface filter makes a bench
+  trip a long temporal gap in a player's on-surface timeline, so shifts split on bench-length gaps
+  and stitch across brief tracker dropouts (`shifts.csv` + `n_shifts`/`shift_seconds` in
+  `players.csv`). *Next:* an explicit entry/exit zone to sharpen the exact on/off instant.*
 - **Plus/minus & on-surface context** — who was on when goals happened. *Depends on identity + goal
   detection.*
 - **Ball detection & possession** — track the ball; attribute possession to nearest player/team,

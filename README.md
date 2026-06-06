@@ -84,6 +84,14 @@ get *true per-player* time-on-surface and shift counts — the headline goal.
   also blocks the look-alike failure mode and floors the identity count near the roster).
 - Adds a `player`/`player_conf` column to `tracks.csv` and writes **`players.csv`**: one row per
   identity with summed time-on-surface, `n_shifts`, the constituent track ids, and team.
+- **Shift detection** (`shifts.py`) — turns each identity's fragmented tracks into **true on-surface
+  shifts**. The surface filter already drops bench detections, so a bench trip is a long *temporal
+  gap* in a player's on-surface timeline: `detect_shifts` bridges short gaps (occlusion / tracker
+  re-acquire → same shift) and splits on bench-length gaps (→ new shift). This replaces the old
+  `n_shifts = fragment count`, which over-counted on every brief tracker dropout. Writes
+  **`shifts.csv`** (one row per shift) and adds `n_shifts` (true) / `n_fragments` (raw) /
+  `shift_seconds` / `longest_shift_s` / `avg_shift_s` to `players.csv`; `--shift-gap` tunes the
+  bench-vs-occlusion threshold (default 3 s).
 - **Validated on real footage:** deterministic; 0 temporal violations; forced to roster size
   (`--roster 13`) every team-checkable merge is same-team (15/15, 0 cross-team, vs ~49% chance) —
   real identity signal. A clean per-individual accuracy number still waits on identity ground truth

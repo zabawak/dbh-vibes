@@ -167,9 +167,26 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
 - **Other constraints to respect.** Appearance is consistent only *within* a game (re-build the
   gallery per game); lighting drifts over a long game; players add/remove layers. Let roster size
   be configurable or auto-determined from clustering quality.
-- **Shift detection.** Once identities are stable, model the bench / entry-exit zones (a
-  `supervision` line/polygon zone) so a player crossing on/off the surface starts/stops a shift
-  cleanly → line changes, goals/assists attribution.
+- **Shift detection — implemented (`shifts.py`, emitted with `--reid`).** Once identities are
+  stable, a player's *true shifts* are the contiguous on-surface stretches of their identity.
+  `detect_shifts` stitches each identity's fragmented track spans, **bridging short temporal gaps**
+  (an occlusion / tracker re-acquire — still the same shift) and **splitting on a bench-length gap**
+  (the player went to the bench and came back — a new shift). The Phase 2 surface filter already
+  drops off-surface (bench) detections, so a bench trip shows up as a long dark stretch in the
+  identity's on-surface timeline — i.e. the *temporal gap is the bench signal*, riding on the
+  surface filter with no hand-drawn bench polygon. This replaces the prior `n_shifts = fragment
+  count`, which over-counted every time the tracker briefly lost a still-on-surface player. Outputs
+  `shifts.csv` (one row per on-surface shift) and adds `n_shifts` (true) / `n_fragments` (raw) /
+  `shift_seconds` / `longest_shift_s` / `avg_shift_s` to `players.csv`. `--shift-gap` sets the
+  bench-vs-occlusion threshold (default 3 s). Pure-stdlib core, unit-tested in `tests/test_shifts.py`.
+  **Validated on the reference clip** (`data/sample.mp4`, `--reid --roster 13`): 28 track fragments
+  → 13 identities → **23 true shifts** (deterministic; shifts non-overlapping within each player;
+  `n_shifts ≤ n_fragments` always). The correction is visible per identity — e.g. a player whose 3
+  fragments (tracks `7 133 303`) the tracker split mid-surface collapses to 2 shifts, and a 2-fragment
+  player (`10 53`) to a single continuous shift — while genuine multi-stint players are kept apart
+  (one identity shows 3 shifts split on ~9–11 s off-surface gaps). *Next (deferred):* an explicit
+  `supervision` entry/exit zone to sharpen the exact on/off instant and attribute line changes /
+  on-ice goal context.
 
 ### Phase 4 — scale & UX
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.

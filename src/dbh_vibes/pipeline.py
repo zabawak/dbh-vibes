@@ -36,6 +36,7 @@ from dbh_vibes.segments import (
     total_live_seconds,
     write_segments_csv,
 )
+from dbh_vibes.shifts import detect_shifts, summarize_player, write_shifts_csv
 from dbh_vibes.spatial import PositionHeatmap
 from dbh_vibes.surface import estimate_surface_mask, on_surface
 from dbh_vibes.team_siglip import SiglipTeamClassifier, assign_teams, crop_box, embed_tracks
@@ -122,6 +123,8 @@ class Phase2Result:
     labels_path: Path | None = None
     identity_quality: IdentityQuality | None = None
     players_path: Path | None = None
+    shifts_path: Path | None = None
+    n_shifts: int | None = None
 
 
 def run_phase2(
@@ -142,6 +145,7 @@ def run_phase2(
     reid: bool = False,
     roster_size: int | None = None,
     reid_distance: float = 0.35,
+    shift_gap_seconds: float = 3.0,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
     source = Path(source)
@@ -344,9 +348,14 @@ def run_phase2(
     # ---- Stats output ----
     team_seconds = _write_csv(csv_path, tracks, players, fps)
     players_path: Path | None = None
+    shifts_path: Path | None = None
+    n_shifts: int | None = None
     if reid:
         players_path = out_dir / "players.csv"
-        _write_players_csv(players_path, tracks, players, fps)
+        shifts_path = out_dir / "shifts.csv"
+        n_shifts = _write_players_csv(
+            players_path, shifts_path, tracks, players, fps, shift_gap_seconds
+        )
     boxscore = build_boxscore(
         [_player_line(tracks[t]) for t in players],
         fps=fps,
@@ -368,6 +377,7 @@ def run_phase2(
         segments=segments, boxscore=boxscore, clips_dir=clips_dir,
         team_quality=team_quality, labels_path=labels_path,
         identity_quality=identity_quality, players_path=players_path,
+        shifts_path=shifts_path, n_shifts=n_shifts,
     )
 
 
@@ -419,14 +429,19 @@ def _write_csv(
 
 
 def _write_players_csv(
-    players_path: Path, tracks: dict[int, TrackStat], players: set[int], fps: float
-) -> None:
+    players_path: Path, shifts_path: Path, tracks: dict[int, TrackStat],
+    players: set[int], fps: float, shift_gap_seconds: float,
+) -> int:
     """Roll fragmented tracks up to per-player identities — the true per-player time-on-surface.
 
-    Each identity sums the time of all its track fragments. ``n_shifts`` is the fragment count (one
-    contiguous on-surface track ≈ one shift), the headline Phase 3 stat that per-track output can't
-    give. ``team`` is the majority vote of the identity's fragments (weighted by frames). Rows are
-    most-active first; tracks without an identity (re-ID off, or unembeddable) are skipped.
+    Each identity sums the time of all its track fragments. ``n_shifts`` is the count of **true
+    on-surface shifts** — contiguous stretches found by stitching the identity's track fragments and
+    splitting only on a bench-length temporal gap (``shift.detect_shifts``), *not* the raw fragment
+    count, which over-counts every time the tracker briefly drops a still-on-surface player.
+    ``n_fragments`` keeps the old raw count alongside for transparency, and a per-shift breakdown is
+    written to ``shifts_path``. ``team`` is the majority vote of the identity's fragments (weighted
+    by frames). Rows are most-active first; tracks without an identity (re-ID off, or unembeddable)
+    are skipped. Returns the total number of shifts across all players.
     """
     by_player: dict[int, list[TrackStat]] = defaultdict(list)
     for tid in players:
@@ -441,20 +456,36 @@ def _write_players_csv(
                 votes[f.team] += f.frames_seen
         return max(votes, key=votes.get) if votes else ""
 
-    fields = ["player", "team", "n_shifts", "track_ids", "frames_seen", "seconds_on_surface",
-              "active_seconds", "first_frame", "last_frame", "mean_conf"]
+    # True shifts: stitch each identity's fragment spans, splitting only on a bench-length gap.
+    track_spans = {
+        pid: [(f.first_frame, f.last_frame) for f in frags] for pid, frags in by_player.items()
+    }
+    shifts_by_player = detect_shifts(track_spans, fps, bridge_gap_seconds=shift_gap_seconds)
+    teams = {pid: team_vote(frags) for pid, frags in by_player.items()}
+    write_shifts_csv(shifts_path, shifts_by_player, fps, teams=teams)
+
+    fields = ["player", "team", "n_shifts", "n_fragments", "track_ids", "frames_seen",
+              "seconds_on_surface", "shift_seconds", "active_seconds", "longest_shift_s",
+              "avg_shift_s", "first_frame", "last_frame", "mean_conf"]
     rows = []
+    total_shifts = 0
     for pid, frags in by_player.items():
         active_s = round(sum(f.active_frames for f in frags) / fps, 2) if fps else 0.0
         confs = [f.player_conf for f in frags if f.player_conf is not None]
+        summary = summarize_player(pid, shifts_by_player.get(pid, []), fps)
+        total_shifts += summary.n_shifts
         rows.append({
             "player": pid,
-            "team": team_vote(frags),
-            "n_shifts": len(frags),
+            "team": teams[pid],
+            "n_shifts": summary.n_shifts,
+            "n_fragments": len(frags),
             "track_ids": " ".join(str(f.track_id) for f in sorted(frags, key=lambda f: f.first_frame)),
             "frames_seen": sum(f.frames_seen for f in frags),
             "seconds_on_surface": round(sum(f.frames_seen for f in frags) / fps, 2) if fps else 0.0,
+            "shift_seconds": summary.shift_seconds,
             "active_seconds": active_s,
+            "longest_shift_s": summary.longest_shift_s,
+            "avg_shift_s": summary.avg_shift_s,
             "first_frame": min(f.first_frame for f in frags),
             "last_frame": max(f.last_frame for f in frags),
             "mean_conf": round(sum(confs) / len(confs), 2) if confs else "",
@@ -464,3 +495,4 @@ def _write_players_csv(
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(rows)
+    return total_shifts
