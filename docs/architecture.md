@@ -49,17 +49,20 @@ python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
 Outputs `annotated.mp4` (team-colored boxes + a LIVE/IDLE banner), `heatmap.jpg`, an enriched
-`tracks.csv` (adds `team`, `active_seconds`, `median_area_px`), `segments.csv` (live-play
+`tracks.csv` (adds `team`, `team_conf`, `active_seconds`, `median_area_px`), `segments.csv` (live-play
 spans; `--clips` also exports per-segment raw clips), and `boxscore.json` (a consumable per-game
 roll-up: game header + per-team totals + per-player table). Pipeline lives in
 `src/dbh_vibes/pipeline.py` (two-pass: detect/track once → fit teams + activity + segments → render).
 
 - **SigLIP team classification** (`team_siglip.py`) — embeds player crops with the SigLIP vision
-  tower, reduces with UMAP, clusters with KMeans, mirroring roboflow/sports. Replaces the MVP
-  torso-color split, which collapsed on real footage. Classified **per track** (majority vote over
-  a few sampled crops), so a clip costs a few hundred embeds, not tens of thousands — practical
-  even on CPU (~2 min/clip). Validated: cleanly isolates the red-pinnie team with zero
-  contamination.
+  tower, then clusters appearance into two teams. Replaces the MVP torso-color split, which
+  collapsed on real footage. Classified **per track** (one mean embedding per player), so a clip
+  costs a few hundred embeds, not tens of thousands — practical even on CPU (~2 min/clip). The
+  clusterer was hardened to fix run-to-run instability (deterministic PCA not UMAP, over-segment then
+  merge by size so goalies/refs can't form a team, colour-anchored stable labels, scale-decorrelation)
+  and is now **run-to-run stable (validated 100% on real footage)** — but team **accuracy** on
+  low-contrast kits is still weak, now **measured at 52.2% (~chance)** by the eval harness; see
+  [team-clustering.md](team-clustering.md).
 - **Position heatmap** (`spatial.py`) — accumulates foot-point density into a colored overlay.
   Kept in **image space**: a single planar homography to a top-down view is unreliable on this
   fixed fisheye with the near boards occluded, so an honest image-space map is the base for a
@@ -94,12 +97,32 @@ roll-up: game header + per-team totals + per-player table). Pipeline lives in
   follows the camera if its position changes — no fixed polygon, no recalibration. Validated to
   re-derive correctly under a simulated camera move. Disable with `--no-surface-filter`. Tracks
   are tagged `player`/`spectator` in `tracks.csv`; only players get teams and time totals.
+- **Labeled eval set + harness** (`labeling.py` + `evaluate.py`) — the way accuracy is now
+  *measured* rather than eyeballed (this was the project's stated binding constraint). `--label-crops`
+  exports one crop montage per track plus a pre-filled `labels.csv` template from the *same*
+  detect/track pass that writes `tracks.csv`, so track ids line up. A human tags team/role/identity
+  by sight in ~2 minutes; `python -m dbh_vibes --evaluate <labels.csv>` scores the predictions —
+  **optimal cluster-label alignment** for team/identity (an arbitrary `0`/`1` aligns to
+  "white"/"dark"), direct equality for role — over the labeled∩predicted overlap. The committed
+  `eval/sample_labels.csv` gives the first measured numbers on natural footage: **team 52.2%
+  (~chance), role 100%**. Pure-numpy metric core, unit-tested in `tests/test_evaluate.py`; see
+  [`../eval/README.md`](../eval/README.md).
 
 ### Still open in Phase 2
-- **Harden team clustering (highest priority).** The current SigLIP→UMAP→KMeans(k=2) team split
-  is **unstable run to run** (e.g., 18-vs-15 one run, 28-vs-6 the next). It is the weakest link
-  and undermines every team-level stat. Full analysis, root causes, and the plan to fix it are in
-  **[team-clustering.md](team-clustering.md)** — deferred to a dedicated session.
+- **Team clustering — stability fixed and validated; accuracy still limited on low-contrast kits.**
+  The old SigLIP→UMAP→KMeans(k=2) team split was **unstable run to run** (18-vs-15 one run, 28-vs-6
+  the next). It was reworked to cluster **per track** (mean embedding), reduce with **deterministic
+  PCA** (no UMAP), **over-segment then merge by size** (goalies/refs fold into a team instead of
+  *becoming* one), anchor **stable T0/T1 labels** to kit colour, and **decorrelate from crop scale**
+  — plus a label-free quality signal (silhouette, balance, per-track `team_conf`). Validated on the
+  real clip: **100% identical assignments across repeated runs** (instability fixed). But the same
+  validation showed the split was driven by **crop near/far scale, not kit** (top PC ~0.86 correlated
+  with crop area); decorrelation removes that confound, yet the low-contrast white/dark kits on this
+  footage still don't separate by appearance. The eval harness (above) now **measures** this:
+  **team accuracy 52.2% (~chance)** on the reference clip — the gap is confirmed, not just suspected.
+  The kit-colour/pinnie prior is in; the top remaining lever is **background-suppressed crops**
+  (mask the rink/legs/skin before embedding), with 52.2% as the number to beat. Full write-up +
+  numbers in **[team-clustering.md](team-clustering.md)**.
 - **Fine-tune a ball-hockey detector** for `ball`, `goalie`, `referee` classes (needs labeled
   clips; reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset) where it transfers).
 - **Calibrated top-down rink map** once camera intrinsics/keypoints are available (fisheye
@@ -122,6 +145,10 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
 - **How this differs from team clustering.** Team = coarse (2 groups by kit); identity = fine
   (one cluster per person, using the *per-player* gear differences as the signal). Identity is
   the harder, more valuable target.
+- **Already measurable.** The eval harness (`evaluate.py`) has a `player` (identity) column ready:
+  the same labeling montages can be tagged with per-player ids, and `--evaluate` will score an
+  identity clustering with the same optimal-alignment metric used for teams — so Phase 3 lands with
+  a number from day one instead of being eyeballed.
 - **Known failure mode to document.** If two players wear near-identical gear, appearance alone
   can't separate them — fall back on spatiotemporal continuity (motion/position across short
   gaps) and, where it exists, any distinguishing cue. A real league with matching uniforms would

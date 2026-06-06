@@ -37,7 +37,7 @@ from dbh_vibes.segments import (
 )
 from dbh_vibes.spatial import PositionHeatmap
 from dbh_vibes.surface import estimate_surface_mask, on_surface
-from dbh_vibes.team_siglip import SiglipTeamClassifier, assign_teams_by_track, crop_box
+from dbh_vibes.team_siglip import SiglipTeamClassifier, assign_teams, crop_box
 
 PERSON_CLASS_ID = 0
 TEAM_COLORS_BGR = {0: (60, 220, 60), 1: (60, 60, 240)}  # green / red
@@ -55,6 +55,7 @@ class TrackStat:
     on_surface_frames: int = 0       # frames whose foot point was on the playing surface
     areas: list[float] = field(default_factory=list)
     team: int | None = None
+    team_conf: float | None = None   # confidence in the team assignment ([0,1]); label-free
 
     def on_surface_frac(self) -> float:
         return self.on_surface_frames / self.frames_seen if self.frames_seen else 0.0
@@ -62,6 +63,22 @@ class TrackStat:
     def is_player(self, min_frames: int, min_frac: float) -> bool:
         """A player spends most of its time on the surface; spectators/bench do not."""
         return self.frames_seen >= min_frames and self.on_surface_frac() >= min_frac
+
+
+@dataclass
+class TeamQuality:
+    """Label-free clustering quality, so team ID can be judged without ground truth.
+
+    silhouette: separation of the two-team split ([-1,1]; higher is cleaner).
+    team_sizes: (T0, T1) track counts — a wildly lopsided split flags a bad fit.
+    n_micro: micro-clusters used before merging to two (>2 means outliers like goalies were
+        peeled off rather than allowed to tip the split).
+    """
+
+    silhouette: float
+    team_sizes: tuple[int, int]
+    n_micro: int
+    method: str = "siglip"           # which path produced the split: "kit-color" or "siglip"
 
 
 @dataclass
@@ -82,6 +99,8 @@ class Phase2Result:
     segments: list[PlaySegment]
     boxscore: dict
     clips_dir: Path | None = None
+    team_quality: TeamQuality | None = None
+    labels_path: Path | None = None
 
 
 def run_phase2(
@@ -97,6 +116,7 @@ def run_phase2(
     min_player_area: float = 1500.0,
     crops_per_track: int = 6,
     write_clips: bool = False,
+    export_labels: bool = False,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
     source = Path(source)
@@ -180,14 +200,44 @@ def run_phase2(
     segments = segment_play(activity.per_frame_active, fps)
     write_segments_csv(segments_path, segments, fps)
 
-    # ---- Team assignment (per track, majority vote) — players only ----
+    # ---- Team assignment (per track, hardened clustering) — players only ----
+    team_quality: TeamQuality | None = None
     if use_siglip_teams:
         player_crops = {t: track_crops[t] for t in players if track_crops.get(t)}
         if player_crops:
-            clf = SiglipTeamClassifier()
-            clf.fit([c for cs in player_crops.values() for c in cs])
-            for tid, team in assign_teams_by_track(clf, player_crops).items():
+            embedder = SiglipTeamClassifier()
+            assignment = assign_teams(embedder, player_crops)
+            for tid, team in assignment.track_team.items():
                 tracks[tid].team = team
+                tracks[tid].team_conf = assignment.track_conf.get(tid)
+            team_quality = TeamQuality(
+                silhouette=assignment.silhouette,
+                team_sizes=assignment.team_sizes,
+                n_micro=assignment.info.n_micro,
+                method=assignment.info.method,
+            )
+
+    # ---- Labeling set (optional): per-track crop montages + a labels.csv template ----
+    # Same detect/track pass that writes tracks.csv, so the labels line up with the predictions by
+    # track id and can be scored directly (see evaluate.py / docs priority #1).
+    labels_path: Path | None = None
+    if export_labels:
+        from dbh_vibes.labeling import export_labeling_set
+
+        order = sorted(players, key=lambda t: tracks[t].active_frames, reverse=True)
+        track_rows = {
+            tid: {
+                "pred_team": tracks[tid].team if tracks[tid].team is not None else "",
+                "pred_role": "player",
+                "frames_seen": tracks[tid].frames_seen,
+                "seconds_on_surface": round(tracks[tid].frames_seen / fps, 2) if fps else 0.0,
+                "median_area_px": int(np.median(tracks[tid].areas)) if tracks[tid].areas else 0,
+            }
+            for tid in order
+        }
+        _, labels_path, _ = export_labeling_set(
+            out_dir, {t: track_crops.get(t, []) for t in order}, track_rows, order=order
+        )
 
     # ---- Heatmap output ----
     cv2.imwrite(str(heatmap_path), heat.render(base_frame))
@@ -258,6 +308,7 @@ def run_phase2(
         tracks=tracks, team_seconds=team_seconds, n_players=len(players),
         n_spectators=len(tracks) - len(players), surface_found=surface is not None,
         segments=segments, boxscore=boxscore, clips_dir=clips_dir,
+        team_quality=team_quality, labels_path=labels_path,
     )
 
 
@@ -278,7 +329,7 @@ def _write_csv(
 ) -> dict[int, float]:
     """Write per-track stats; return per-team active-play seconds aggregate (players only)."""
     team_seconds: dict[int, float] = defaultdict(float)
-    fields = ["track_id", "role", "team", "first_frame", "last_frame", "frames_seen",
+    fields = ["track_id", "role", "team", "team_conf", "first_frame", "last_frame", "frames_seen",
               "seconds_on_surface", "active_seconds", "on_surface_frac", "median_area_px"]
     with csv_path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
@@ -292,6 +343,7 @@ def _write_csv(
                 "track_id": ts.track_id,
                 "role": "player" if is_player else "spectator",
                 "team": ts.team if (is_player and ts.team is not None) else "",
+                "team_conf": round(ts.team_conf, 2) if (is_player and ts.team_conf is not None) else "",
                 "first_frame": ts.first_frame,
                 "last_frame": ts.last_frame,
                 "frames_seen": ts.frames_seen,

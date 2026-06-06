@@ -29,9 +29,15 @@ tooling, [`docs/architecture.md`](docs/architecture.md) for the phased roadmap, 
 Validated on real ball hockey footage. Adds three capabilities on top of detection + tracking
 (`src/dbh_vibes/pipeline.py`):
 
-- **SigLIP team classification** (`team_siglip.py`) — appearance embeddings → UMAP → KMeans,
-  classifying each *track* once (not every frame, so it's CPU-affordable). Cleanly separates the
-  teams where the Phase 1 color split couldn't.
+- **Team classification** (`team_siglip.py`) — two auto-selected paths. A **kit-colour prior**
+  splits on background-suppressed torso chroma when one team wears a vivid kit (the "pinnies vs
+  none" case) — strong, scale-immune, and it skips SigLIP. Otherwise it falls back to **SigLIP
+  appearance embeddings** clustered **per track** (one mean embedding per player). The embedding
+  path was hardened against the run-to-run instability that plagued the first version (deterministic
+  PCA — no UMAP, over-segment-then-merge so goalies/refs can't form a team, colour-anchored stable
+  labels, crop-scale decorrelation) and is now **run-to-run stable (validated 100% on real
+  footage)**. *Accuracy* on low-contrast kits (white-vs-dark) is still weak when the colour prior
+  can't fire — see [`docs/team-clustering.md`](docs/team-clustering.md) for validation + next steps.
 - **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
 - **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
   time-on-surface only accrues during real play.
@@ -43,16 +49,24 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
   consumable `boxscore.json` (game header + per-team totals + a per-player table) and prints a
   compact text table. Per-track today, not yet per-player (no jersey numbers → true shift counts
   wait on Phase 3 identity); team totals are robust to the track fragmentation.
+- **Labeled eval set + harness** (`labeling.py` + `evaluate.py`) — the way we now *measure*
+  accuracy instead of eyeballing it. `--label-crops` exports one crop montage per track plus a
+  pre-filled `labels.csv` template (same pass as `tracks.csv`, so ids line up); a human tags
+  team/role/identity by sight in ~2 minutes; `python -m dbh_vibes --evaluate <labels.csv>` scores
+  the predictions with optimal cluster-label alignment (an arbitrary team `0`/`1` aligns to
+  "white"/"dark"). First measured numbers on the reference clip: **team 52.2% (~chance), role 100%**
+  — see [`eval/README.md`](eval/README.md).
 
 ```bash
-pip install -e ".[phase2]"     # adds transformers + umap + scikit-learn
+pip install -e ".[phase2]"     # adds transformers + scikit-learn
 python -m dbh_vibes data/game.mp4 --out runs/game --phase2
 ```
 
 Outputs `annotated.mp4` (team-colored boxes + LIVE/IDLE banner), `heatmap.jpg`, an enriched
-`tracks.csv` (`team`, `active_seconds`, `median_area_px`), `segments.csv` (live-play spans), and
-`boxscore.json` (per-game roll-up). Add `--no-siglip` to skip team classification for a faster
-run, or `--clips` to also export per-segment raw clips.
+`tracks.csv` (`team`, `team_conf`, `active_seconds`, `median_area_px`), `segments.csv` (live-play
+spans), and `boxscore.json` (per-game roll-up). Add `--no-siglip` to skip team classification for a
+faster run, `--clips` to also export per-segment raw clips, or `--label-crops` to export the
+labeling set for the eval harness.
 
 ### Auto-clip pre-pass (`--autoclip`) — skip dead time *before* the heavy pass
 
