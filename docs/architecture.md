@@ -60,9 +60,11 @@ roll-up: game header + per-team totals + per-player table). Pipeline lives in
   costs a few hundred embeds, not tens of thousands — practical even on CPU (~2 min/clip). The
   clusterer was hardened to fix run-to-run instability (deterministic PCA not UMAP, over-segment then
   merge by size so goalies/refs can't form a team, colour-anchored stable labels, scale-decorrelation)
-  and is now **run-to-run stable (validated 100% on real footage)** — but team **accuracy** on
-  low-contrast kits is still weak, now **measured at 52.2% (~chance)** by the eval harness; see
-  [team-clustering.md](team-clustering.md).
+  and is now **run-to-run stable (validated 100% on real footage)**. Crops are now
+  **background-suppressed before embedding** (`background_suppressed_crop` torso-crops each box and
+  masks the rink-coloured pixels to grey, so SigLIP keys on the kit not the blue rink), which lifts
+  measured accuracy **52.2% → 56.5%** on the reference clip and balances the split — still short of
+  clean on the low-contrast white-vs-dark kits here; see [team-clustering.md](team-clustering.md).
 - **Position heatmap** (`spatial.py`) — accumulates foot-point density into a colored overlay.
   Kept in **image space**: a single planar homography to a top-down view is unreliable on this
   fixed fisheye with the near boards occluded, so an honest image-space map is the base for a
@@ -118,11 +120,11 @@ roll-up: game header + per-team totals + per-player table). Pipeline lives in
   real clip: **100% identical assignments across repeated runs** (instability fixed). But the same
   validation showed the split was driven by **crop near/far scale, not kit** (top PC ~0.86 correlated
   with crop area); decorrelation removes that confound, yet the low-contrast white/dark kits on this
-  footage still don't separate by appearance. The eval harness (above) now **measures** this:
-  **team accuracy 52.2% (~chance)** on the reference clip — the gap is confirmed, not just suspected.
-  The kit-colour/pinnie prior is in; the top remaining lever is **background-suppressed crops**
-  (mask the rink/legs/skin before embedding), with 52.2% as the number to beat. Full write-up +
-  numbers in **[team-clustering.md](team-clustering.md)**.
+  footage still don't separate by appearance. The eval harness (above) **measures** this: raw-crop
+  embeddings score **team accuracy 52.2% (~chance)** on the reference clip. The kit-colour/pinnie
+  prior and **background-suppressed crops** (mask the rink/legs/skin before embedding) are both in;
+  suppression lifts the embedding path to **56.5%** and balances the split — a real but partial gain,
+  white-vs-dark stays hard. Full write-up + numbers in **[team-clustering.md](team-clustering.md)**.
 - **Fine-tune a ball-hockey detector** for `ball`, `goalie`, `referee` classes (needs labeled
   clips; reuse [MHPTD](https://github.com/grant81/hockeyTrackingDataset) where it transfers).
 - **Calibrated top-down rink map** once camera intrinsics/keypoints are available (fisheye

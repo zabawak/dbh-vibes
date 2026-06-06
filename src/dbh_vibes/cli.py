@@ -58,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --phase2/--autoclip, don't filter off-court spectators/bench by playing surface.",
     )
     parser.add_argument(
+        "--no-bg-suppress",
+        action="store_true",
+        help="With --phase2, embed raw crops instead of background-suppressed ones (ablation; "
+             "the suppressed crops mask the rink before SigLIP so it keys on the kit, not the rink).",
+    )
+    parser.add_argument(
         "--clips",
         action="store_true",
         help="With --phase2, also write each live-play segment as a raw clip to <out>/clips/.",
@@ -182,6 +188,7 @@ def _run_phase2(args) -> int:
             filter_to_surface=not args.no_surface_filter,
             write_clips=args.clips,
             export_labels=args.label_crops,
+            suppress_background=not args.no_bg_suppress,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

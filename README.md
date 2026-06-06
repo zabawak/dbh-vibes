@@ -36,8 +36,11 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
   path was hardened against the run-to-run instability that plagued the first version (deterministic
   PCA — no UMAP, over-segment-then-merge so goalies/refs can't form a team, colour-anchored stable
   labels, crop-scale decorrelation) and is now **run-to-run stable (validated 100% on real
-  footage)**. *Accuracy* on low-contrast kits (white-vs-dark) is still weak when the colour prior
-  can't fire — see [`docs/team-clustering.md`](docs/team-clustering.md) for validation + next steps.
+  footage)**. Crops are also **background-suppressed before embedding** (torso-crop + mask the
+  rink-coloured pixels to grey) so SigLIP keys on the kit not the blue rink — measured to lift team
+  accuracy **52.2% → 56.5%** on the reference clip (`--no-bg-suppress` ablates it). *Accuracy* on
+  low-contrast kits (white-vs-dark) is improved but still weak when the colour prior can't fire —
+  see [`docs/team-clustering.md`](docs/team-clustering.md) for validation + next steps.
 - **Position heatmap** (`spatial.py`) — where players spend time, as a density overlay.
 - **Active-play detection** (`activity.py`) — separates live play from bench downtime, so
   time-on-surface only accrues during real play.
@@ -54,8 +57,8 @@ Validated on real ball hockey footage. Adds three capabilities on top of detecti
   pre-filled `labels.csv` template (same pass as `tracks.csv`, so ids line up); a human tags
   team/role/identity by sight in ~2 minutes; `python -m dbh_vibes --evaluate <labels.csv>` scores
   the predictions with optimal cluster-label alignment (an arbitrary team `0`/`1` aligns to
-  "white"/"dark"). First measured numbers on the reference clip: **team 52.2% (~chance), role 100%**
-  — see [`eval/README.md`](eval/README.md).
+  "white"/"dark"). Measured numbers on the reference clip: **team 52.2% (raw crops) → 56.5%
+  (background-suppressed crops), role 100%** — see [`eval/README.md`](eval/README.md).
 
 ```bash
 pip install -e ".[phase2]"     # adds transformers + scikit-learn

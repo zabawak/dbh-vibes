@@ -14,7 +14,8 @@ Phase 1–2 are in: detection + tracking, surface filter, activity gating, auto-
 heatmap, team clustering, and now a **labeled eval set + harness**. Team clustering was the prior
 top priority — its run-to-run *instability is fixed* (deterministic; 100% stable on real footage)
 and a **kit-colour prior** handles the common pinnie case. What's left there is *accuracy on
-low-contrast kits* — and that gap is now **measured, not guessed** (see below). The near-term
+low-contrast kits* — now **measured, not guessed**, and the first lever against it
+(**background-suppressed crops**) is in and nudged it from 52.2% → 56.5% (see below). The near-term
 priorities are:
 
 1. **Labeled eval set + harness** — ✅ **done** *(was the binding constraint).* `evaluate.py` +
@@ -24,11 +25,16 @@ priorities are:
    arbitrary team `0`/`1` aligns to "white"/"dark"). **First measured result on the reference clip:
    team accuracy 52.2% (12/23) — ~chance — vs role 100% (27/27)**, hard-confirming the suspected
    accuracy gap. This unblocks principled iteration on everything below. *(Done; see `eval/README.md`.)*
-2. **Background-suppressed crops** for team/identity — *now the top open lever.* Person-segment (or
-   tight-torso + rink masking) *before* embedding, so blue rink + legs + skin stop dominating SigLIP.
-   The colour path already masks the rink; do the same for the embedding. The harness above gives it
-   a number to beat (52.2%). *Low–medium.*
-3. **Phase 3 appearance re-ID (per-player identity)** — the biggest value unlock (true per-player
+2. **Background-suppressed crops** for team/identity — ✅ **done.** `background_suppressed_crop`
+   (`team_siglip.py`) torso-crops each box and neutralises the saturated rink-coloured (border-hue)
+   pixels to flat grey *before* SigLIP, so blue rink + legs + skin stop dominating the embedding —
+   the same border-hue suppression the colour path already used, now applied to the embedding.
+   **Measured on the reference clip it beats the 52.2% baseline: team 56.5% (13/23)**, and the split
+   gets markedly more balanced (sizes 18-vs-9 → 15-vs-12; active-seconds 1.83:1 → 1.12:1). An honest
+   gain, not a fix: the low-contrast white/dark kit on this footage is still the hard case (56.5% is
+   well short of clean), so appearance alone remains weak here. *(Done; `--no-bg-suppress` ablates
+   it. See docs/team-clustering.md.)*
+3. **Phase 3 appearance re-ID (per-player identity)** — *now the top open lever.* The biggest value unlock (true per-player
    time-on-surface, shifts, +/-). Reuses the now-hardened per-track embedding machinery at finer
    (per-individual) granularity; the harness already has a `player` (identity) slot ready to score it.
    *Hard; see architecture.md Phase 3.*
@@ -39,7 +45,7 @@ priorities are:
 detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation
                            ├─ surface filter (done) ─── zone stats (needs homography)
                            ├─ eval harness (done) ──────── measures team/role/identity accuracy
-                           ├─ team clustering (stable; kit-colour prior; accuracy 52% measured) ─ team stats
+                           ├─ team clustering (stable; kit prior; bg-suppressed crops; acc 56.5%) ─ team stats
                            ├─ appearance re-ID (Phase 3) ─ per-player stats, +/-, shifts
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones

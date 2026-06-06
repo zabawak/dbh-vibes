@@ -18,6 +18,7 @@ import numpy as np
 from dbh_vibes.team_siglip import (
     ClusterInfo,
     aggregate_track_embeddings,
+    background_suppressed_crop,
     cluster_team_embeddings,
     detect_kit_split,
     order_labels_by_color,
@@ -269,3 +270,39 @@ def test_torso_color_gray_is_desaturated():
     crop = np.full((40, 20, 3), 128, dtype=np.uint8)
     _, sat, _ = torso_color_hsv(crop)
     assert sat < 10
+
+
+# ---- background-suppressed crops (priority #2: stop the rink dominating SigLIP) ---------------
+
+def _torso_window(h: int, w: int) -> tuple[int, int, int, int]:
+    return int(0.15 * h), int(0.55 * h), int(0.20 * w), int(0.80 * w)
+
+
+def test_background_suppression_neutralises_rink_keeps_kit():
+    # A saturated-blue "rink" crop with a white-kit block in the upper torso window. The rink
+    # pixels (saturated, border-hue) must be neutralised to grey; the white kit must survive.
+    h, w = 40, 20
+    crop = np.zeros((h, w, 3), dtype=np.uint8)
+    crop[:, :, 0] = 255            # all blue (BGR) -> saturated rink, sets the border hue
+    crop[6:14, 4:16] = 240         # white kit block (low saturation), inside the torso window
+    out = background_suppressed_crop(crop)
+
+    r0, r1, c0, c1 = _torso_window(h, w)
+    assert out.shape == (r1 - r0, c1 - c0, 3)          # output is the torso window
+    assert (out[0:8] >= 200).all()                     # white kit preserved (torso rows 0:8)
+    assert (out[8:] == 128).all()                      # blue rink neutralised to flat grey
+
+
+def test_background_suppression_falls_back_when_all_rink():
+    # A crop that is entirely rink: there is nothing to keep, so we return the torso crop
+    # untouched rather than gutting it to a uniform grey field (which carries no signal).
+    crop = np.zeros((40, 20, 3), dtype=np.uint8)
+    crop[:, :, 0] = 255
+    out = background_suppressed_crop(crop)
+    assert out.size > 0
+    assert (out[:, :, 0] == 255).all()                 # left untouched, not neutralised
+
+
+def test_background_suppression_small_crop_passthrough():
+    crop = np.full((4, 4, 3), 100, dtype=np.uint8)
+    np.testing.assert_array_equal(background_suppressed_crop(crop), crop)

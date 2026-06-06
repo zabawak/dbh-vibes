@@ -13,6 +13,13 @@ common "pinnies vs none" case — falling back to embeddings otherwise. On this 
 the prior correctly declines and the residual accuracy gap is real; both are documented in
 *Real-footage validation* below. The original analysis and the stability rework are kept for context.
 
+**Update (background-suppressed crops):** the first lever against the low-contrast gap is now in —
+`background_suppressed_crop` masks the rink-coloured background out of each torso crop before SigLIP
+(the same border-hue suppression the colour prior used, applied to the embedding). Measured on the
+reference clip it lifts team accuracy **52.2% → 56.5% (13/23)** and balances the split (sizes
+18-vs-9 → 15-vs-12). Honest framing: a real, repeatable gain but not a fix — white-vs-dark kits stay
+hard for appearance embeddings. See *Concrete next steps* below.
+
 ## The problem we saw
 
 Team assignment uses SigLIP crop embeddings → UMAP → KMeans(k=2), classified per track by
@@ -152,19 +159,30 @@ SigLIP**. A natural pinnie clip is still wanted to confirm end-to-end on untouch
 - **Kit-colour prior — done (#7), needs a real pinnie clip to confirm end-to-end.** Currently
   "vivid vs plain"; extend to two *distinct* vivid kits (e.g. red vs blue) — today that falls back
   to embeddings.
-- **Background-suppressed crops.** The colour path already removes the rink via border-hue masking;
-  do the same before *embedding* (person-segment or tight torso box) so blue rink + legs + skin
-  stop dominating SigLIP — the most promising lever for the white-vs-dark case.
+- **Background-suppressed crops — done (`background_suppressed_crop`).** The colour path already
+  removed the rink via border-hue masking; we now do the same before *embedding* — torso-crop each
+  box and neutralise the saturated rink-coloured pixels to flat grey — so blue rink + legs + skin
+  stop dominating SigLIP. **Measured: it beats the 52.2% baseline → 56.5% (13/23)** on the reference
+  clip, and the split gets much more balanced (sizes 18-vs-9 → 15-vs-12; active-seconds 1.83:1 →
+  1.12:1). An honest but modest gain — the low-contrast white/dark kit here is still not cleanly
+  separable by appearance, so 56.5% is progress, not a solution. Ablate with `--no-bg-suppress`.
+  *Next, heavier lever:* a true person-segmentation mask (YOLO-seg) instead of the torso box, which
+  would also drop arms/skin the torso window keeps.
 - **A small labeled set — done.** `eval/sample_labels.csv` hand-labels 23 of 27 player tracks on
-  the reference clip; the harness (`evaluate.py`, `python -m dbh_vibes --evaluate`) now reports the
-  **first true team accuracy on natural footage: 52.2% (12/23) — ~chance**, vs role 100% (27/27).
-  This is the hard confirmation of the gap that internal signals (silhouette / scale-decorrelation /
-  tinted-kit accuracy) could only hint at: the white/dark split here is no better than a coin flip.
-  52.2% is the baseline the background-suppressed-crop lever must beat. More clips / camera setups
-  would broaden coverage. See `eval/README.md` for the recipe.
+  the reference clip; the harness (`evaluate.py`, `python -m dbh_vibes --evaluate`) reports the
+  **first true team accuracy on natural footage: 52.2% (12/23) — ~chance** for the raw-crop
+  embedding, **56.5% (13/23)** once crops are background-suppressed, vs role 100% (27/27). This is
+  the hard confirmation of the gap that internal signals (silhouette / scale-decorrelation /
+  tinted-kit accuracy) could only hint at. More clips / camera setups would broaden coverage. See
+  `eval/README.md` for the recipe.
 - **Robustness checks**: different lighting, a both-teams-similar-colours clip (expected failure —
   document it), and the goalie-heavy frames that tipped the original run.
 
 The validation scripts used (cut clip, run twice, montage, tinted-crop colour test, embedding
 diagnostics) are ad-hoc and were kept out of the repo; re-create them from the recipe in
-`data/README.md` if needed.
+`data/README.md` if needed. The background-suppression result above was measured exactly this way:
+cut the reference clip, run the pipeline twice on it — once with `--no-bg-suppress` (the 52.2%
+baseline) and once with suppression on (the new default, 56.5%) — and score each `tracks.csv` with
+`python -m dbh_vibes --evaluate eval/sample_labels.csv --tracks <run>/tracks.csv`. Detection and
+tracking are deterministic and unaffected by the flag, so both runs produce the *same* track ids and
+the same 23-track labeled overlap — an apples-to-apples comparison of the embedding change alone.
