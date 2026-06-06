@@ -438,6 +438,50 @@ def track_kit_chroma(crops: list[np.ndarray]) -> np.ndarray:
     return np.median(np.vstack([torso_kit_chroma(c) for c in crops]), axis=0)
 
 
+def background_suppressed_crop(
+    crop: np.ndarray,
+    *,
+    neutral: int = 128,
+    hue_tol: float = 12.0,
+    sat_floor: float = 0.25,
+    min_keep: int = 30,
+) -> np.ndarray:
+    """Return a torso crop with rink/background pixels neutralised, for SigLIP embedding.
+
+    The embedding path otherwise keys on the bright blue rink (and legs/skin) rather than the kit —
+    on the reference fisheye footage the top principal component correlated 0.86 with crop scale,
+    i.e. near-vs-far *background detail*, not the white-vs-dark shirts (docs/team-clustering.md). We
+    (1) crop to the torso window (drops head, legs, and most floor) and (2) replace pixels whose hue
+    matches the crop *border* — the rink/surroundings the player stands against — and are saturated,
+    with a flat neutral grey, so SigLIP sees the kit against a uniform field instead of the rink.
+
+    This mirrors the background suppression already used by ``torso_kit_chroma`` for the colour
+    prior, now applied *before* embedding (the lever logged as priority #2 in docs/feature-ideas.md).
+    Low-saturation kit pixels (white/dark shirts) survive — only saturated rink-coloured pixels are
+    neutralised — and it falls back to the unmasked torso crop if suppression would remove almost
+    everything (a tiny/far crop that is mostly background).
+    """
+    h, w = crop.shape[:2]
+    if h < 6 or w < 6:
+        return crop
+    hsv_full = cv2_cvt_hsv(crop)
+    border = np.concatenate([hsv_full[0], hsv_full[-1], hsv_full[:, 0], hsv_full[:, -1]])
+    bg_hue = float(np.median(border.reshape(-1, 3)[:, 0]))
+    r0, r1, c0, c1 = int(0.15 * h), int(0.55 * h), int(0.20 * w), int(0.80 * w)
+    torso = crop[r0:r1, c0:c1].copy()
+    if torso.size == 0:
+        return crop
+    thsv = hsv_full[r0:r1, c0:c1].reshape(-1, 3).astype(np.float64)
+    hue, sat = thsv[:, 0], thsv[:, 1] / 255.0
+    dh = np.minimum(np.abs(hue - bg_hue), 180.0 - np.abs(hue - bg_hue))
+    bg = (dh < hue_tol) & (sat > sat_floor)            # rink-coloured & saturated -> background
+    if int((~bg).sum()) < min_keep:                    # almost all background -> don't gut the crop
+        return torso
+    flat = torso.reshape(-1, 3)
+    flat[bg] = neutral
+    return flat.reshape(torso.shape)
+
+
 def _euclid_margin_conf(points: np.ndarray, labels: np.ndarray, centroids: np.ndarray) -> np.ndarray:
     """Per-point confidence in [0,1] from the relative distance to own vs other centroid."""
     d0 = np.linalg.norm(points - centroids[0], axis=1)
@@ -517,6 +561,8 @@ class TeamAssignment:
 def assign_teams(
     embedder: SiglipTeamClassifier,
     track_crops: dict[int, list[np.ndarray]],
+    *,
+    suppress_background: bool = True,
 ) -> TeamAssignment:
     """Assign one stable team id per track from its sampled crops.
 
@@ -525,7 +571,9 @@ def assign_teams(
         (e.g. pinnies), split on background-suppressed torso chroma. Strong, scale-immune, and
         skips the SigLIP embedding entirely — much cheaper.
       - **Embedding fallback**: otherwise embed crops -> pool per track -> scale-decorrelated
-        clustering (over-segment + size-merge).
+        clustering (over-segment + size-merge). With ``suppress_background`` (default), each crop is
+        torso-cropped and its rink-coloured background neutralised before embedding, so SigLIP keys
+        on the kit rather than the blue rink / legs / skin (docs/feature-ideas.md priority #2).
     Either way T0/T1 are anchored to kit colour and a per-track confidence is reported.
     """
     track_ids = sorted(track_crops)
@@ -556,7 +604,10 @@ def assign_teams(
         labels, info = kit
         conf = info.conf
     else:
-        crop_emb = embedder.embed(flat_crops)
+        embed_crops = (
+            [background_suppressed_crop(c) for c in flat_crops] if suppress_background else flat_crops
+        )
+        crop_emb = embedder.embed(embed_crops)
         track_emb = aggregate_track_embeddings(crop_emb, owners, present_ids)
         labels, info = cluster_team_embeddings(track_emb, sizes=np.array(sizes_per_track))
         conf = team_confidence(info, labels)

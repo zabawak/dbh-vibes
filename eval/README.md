@@ -44,10 +44,21 @@ this white/dark footage):
 
 | field | accuracy | n |
 |---|---|---|
-| **team** | **52.2%** | 12/23 |
+| team (raw crops) | 52.2% | 12/23 |
+| **team (bg-suppressed crops)** | **56.5%** | 13/23 |
 | role | 100.0% | 27/27 |
 
-Team accuracy is ~chance — the **first hard confirmation** of the long-suspected accuracy gap
-(docs/team-clustering.md): the embedding split is driven by crop scale, not the low-contrast
-white/dark kits. Role is perfect: the surface filter classified every on-court player correctly.
-This number is the baseline that the next lever — **background-suppressed crops** — must beat.
+Raw-crop team accuracy is ~chance — the **first hard confirmation** of the long-suspected accuracy
+gap (docs/team-clustering.md): the embedding split is driven by crop scale, not the low-contrast
+white/dark kits. **Background-suppressed crops** (the next lever, now implemented — torso-crop and
+mask the rink before embedding) beat that baseline at **56.5% (13/23)** and balance the split, but
+white-vs-dark stays hard. Reproduce both with `--no-bg-suppress` (raw) vs the default (suppressed):
+
+```bash
+python -m dbh_vibes data/sample.mp4 --out runs/raw --phase2 --model yolo11s.pt --no-bg-suppress
+python -m dbh_vibes data/sample.mp4 --out runs/sup --phase2 --model yolo11s.pt
+python -m dbh_vibes --evaluate eval/sample_labels.csv --tracks runs/raw/tracks.csv   # 52.2%
+python -m dbh_vibes --evaluate eval/sample_labels.csv --tracks runs/sup/tracks.csv   # 56.5%
+```
+
+Role is perfect: the surface filter classified every on-court player correctly.

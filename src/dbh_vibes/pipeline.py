@@ -117,6 +117,7 @@ def run_phase2(
     crops_per_track: int = 6,
     write_clips: bool = False,
     export_labels: bool = False,
+    suppress_background: bool = True,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
     source = Path(source)
@@ -206,7 +207,9 @@ def run_phase2(
         player_crops = {t: track_crops[t] for t in players if track_crops.get(t)}
         if player_crops:
             embedder = SiglipTeamClassifier()
-            assignment = assign_teams(embedder, player_crops)
+            assignment = assign_teams(
+                embedder, player_crops, suppress_background=suppress_background
+            )
             for tid, team in assignment.track_team.items():
                 tracks[tid].team = team
                 tracks[tid].team_conf = assignment.track_conf.get(tid)
