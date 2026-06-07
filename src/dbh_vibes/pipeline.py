@@ -145,7 +145,7 @@ def run_phase2(
     reid: bool = False,
     roster_size: int | None = None,
     reid_distance: float = 0.35,
-    shift_gap_seconds: float = 3.0,
+    shift_gap_seconds: float = 15.0,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
     source = Path(source)

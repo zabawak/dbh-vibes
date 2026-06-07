@@ -88,6 +88,15 @@ def test_min_shift_filter_drops_blips_and_reindexes():
     assert shifts[5][0].start_frame == 0
 
 
+def test_default_gap_is_a_bench_change_floor():
+    # The default threshold (15s) must treat a ~10s absence as in-shift occlusion (a player can't
+    # bench and return that fast) but split a clearly bench-length ~30s absence into two shifts.
+    occlusion = {1: [(0, 30), (0 + 30 + round(10 * FPS), 30 + round(10 * FPS) + 30)]}
+    bench = {1: [(0, 30), (0 + 30 + round(30 * FPS), 30 + round(30 * FPS) + 30)]}
+    assert len(detect_shifts(occlusion, FPS)[1]) == 1   # 10s gap -> one shift (default 15s)
+    assert len(detect_shifts(bench, FPS)[1]) == 2       # 30s gap -> two shifts
+
+
 def test_empty_player_omitted():
     assert detect_shifts({9: []}, FPS) == {}
 

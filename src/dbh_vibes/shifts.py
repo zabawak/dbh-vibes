@@ -91,7 +91,7 @@ def merge_spans(spans: list[tuple[int, int]], bridge_frames: int) -> list[tuple[
 def detect_shifts(
     track_spans: dict[int, list[tuple[int, int]]],
     fps: float,
-    bridge_gap_seconds: float = 3.0,
+    bridge_gap_seconds: float = 15.0,
     min_shift_seconds: float = 0.0,
 ) -> dict[int, list[Shift]]:
     """Segment each player's track fragments into true on-surface shifts.
@@ -103,6 +103,11 @@ def detect_shifts(
         fps: frames per second, to convert the second-based knobs to frames.
         bridge_gap_seconds: fragments separated by an on-surface gap no longer than this are the
             same shift (occlusion / tracker re-acquire); a longer gap is a bench trip → new shift.
+            Default 15 s is a deliberately *physical* threshold — a player cannot get to the bench,
+            sub off, and return in under ~15 s, so any shorter absence is treated as in-shift
+            occlusion. (On real fisheye footage the inter-fragment gap distribution is **not**
+            cleanly bimodal — short dropouts blur into longer occlusions — so this is a judgement
+            call, not a learned boundary; an explicit entry/exit zone would resolve it properly.)
         min_shift_seconds: drop shifts shorter than this (debounces a stray one-frame fragment that
             didn't bridge into a neighbour). 0 keeps every shift.
 

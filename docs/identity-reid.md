@@ -57,11 +57,14 @@ With `--phase2 --reid`:
   duration, fragments stitched). `shifts.detect_shifts` stitches each identity's fragmented track
   spans, bridging short temporal gaps (occlusion / tracker re-acquire → same shift) and splitting on
   a bench-length gap (→ new shift); the surface filter already drops bench detections, so a bench
-  trip *is* that long temporal gap. Replaces the over-counting fragment-count shift estimate.
-  Validated on the reference clip (28 fragments → 13 identities → **23 true shifts**) and on a
-  3-minute clip with real line changes (141 fragments → 20 identities → **104 true shifts**, mean
-  5.2 shifts/player) — deterministic, shifts non-overlapping within each player, `n_shifts ≤
-  n_fragments` always.
+  trip *is* that long temporal gap. Replaces the over-counting fragment-count shift estimate. The
+  gap threshold defaults to **15 s** — a physical floor on a real bench change (shorter absences are
+  treated as occlusion). Validated: 30 s reference clip → 28 fragments → 13 identities → **13 shifts
+  (exactly 1.0/player**, correct for a window too short to bench in); 3-minute line-change clip →
+  141 fragments → 20 identities → **61 shifts (3.0/player, avg 32 s)** — deterministic, shifts
+  non-overlapping within each player, `n_shifts ≤ n_fragments` always. (The inter-fragment gap
+  distribution on this fisheye footage is not cleanly bimodal, so the threshold is a tunable
+  judgement call; an explicit entry/exit zone would replace it — see architecture.md.)
 - The console prints `tracks -> identities`, silhouette, and how many concurrent-overlap merges the
   constraint blocked.
 

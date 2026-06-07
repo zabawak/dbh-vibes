@@ -57,7 +57,11 @@ The near-term priorities are:
    count`**, which over-counted on every brief tracker dropout of a still-on-surface player. Writes
    `shifts.csv` (one row per shift) and adds `n_shifts` (true) / `n_fragments` (raw) / `shift_seconds`
    / `longest_shift_s` / `avg_shift_s` to `players.csv`; `--shift-gap` tunes the bench-vs-occlusion
-   threshold. Pure-stdlib core, unit-tested in `tests/test_shifts.py`. *(Done; see
+   threshold (default **15 s**, a physical floor on a real bench change). Validated: 30 s clip → 1.0
+   shift/player (correct — too short to bench in), 3-min line-change clip → 3.0/player (avg 32 s).
+   Honest caveat: the inter-fragment gap distribution on this fisheye footage isn't cleanly bimodal,
+   so the threshold is a tunable judgement call — an explicit entry/exit zone is the deferred
+   principled fix. Pure-stdlib core, unit-tested in `tests/test_shifts.py`. *(Done; see
    [docs/architecture.md](architecture.md) Phase 3.)*
 
 ## Dependency map (what unlocks what)

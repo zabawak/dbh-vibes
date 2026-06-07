@@ -91,7 +91,8 @@ get *true per-player* time-on-surface and shift counts — the headline goal.
   `n_shifts = fragment count`, which over-counted on every brief tracker dropout. Writes
   **`shifts.csv`** (one row per shift) and adds `n_shifts` (true) / `n_fragments` (raw) /
   `shift_seconds` / `longest_shift_s` / `avg_shift_s` to `players.csv`; `--shift-gap` tunes the
-  bench-vs-occlusion threshold (default 3 s).
+  bench-vs-occlusion threshold (default 15 s — a physical floor on a real bench change; validated
+  to give exactly 1.0 shift/player on the 30 s clip and 3.0/player on a 3-min line-change clip).
 - **Validated on real footage:** deterministic; 0 temporal violations; forced to roster size
   (`--roster 13`) every team-checkable merge is same-team (15/15, 0 cross-team, vs ~49% chance) —
   real identity signal. A clean per-individual accuracy number still waits on identity ground truth

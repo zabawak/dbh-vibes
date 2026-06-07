@@ -97,10 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--shift-gap",
         type=float,
-        default=3.0,
+        default=15.0,
         help="With --reid, on-surface gap (seconds) that separates two shifts. Fragments of one "
              "player closer than this are stitched into one shift (occlusion / tracker re-acquire); "
-             "a longer gap is a bench trip → a new shift (default: 3).",
+             "a longer gap is a bench trip → a new shift. Default 15s is a physical floor on a real "
+             "bench change (shorter absences are treated as occlusion).",
     )
     parser.add_argument(
         "--evaluate",

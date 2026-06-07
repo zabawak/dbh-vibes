@@ -178,19 +178,25 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
   count`, which over-counted every time the tracker briefly lost a still-on-surface player. Outputs
   `shifts.csv` (one row per on-surface shift) and adds `n_shifts` (true) / `n_fragments` (raw) /
   `shift_seconds` / `longest_shift_s` / `avg_shift_s` to `players.csv`. `--shift-gap` sets the
-  bench-vs-occlusion threshold (default 3 s). Pure-stdlib core, unit-tested in `tests/test_shifts.py`.
-  **Validated on the reference clip** (`data/sample.mp4`, `--reid --roster 13`): 28 track fragments
-  → 13 identities → **23 true shifts** (deterministic; shifts non-overlapping within each player;
-  `n_shifts ≤ n_fragments` always). The correction is visible per identity — e.g. a player whose 3
-  fragments (tracks `7 133 303`) the tracker split mid-surface collapses to 2 shifts, and a 2-fragment
-  player (`10 53`) to a single continuous shift — while genuine multi-stint players are kept apart
-  (one identity shows 3 shifts split on ~9–11 s off-surface gaps). On a **3-minute clip** with real
-  line changes (`-ss 1430 -t 180`) the effect is larger and clearer: 141 track fragments → 20
-  identities → **104 true shifts** (deterministic; non-overlapping; mean 5.2 shifts/player, range
-  3–9), so heavily-fragmented players collapse sensibly (e.g. 12 fragments → 8 shifts) while the
-  per-player shift structure of a rotating bench is preserved. *Next (deferred):* an explicit
-  `supervision` entry/exit zone to sharpen the exact on/off instant and attribute line changes /
-  on-ice goal context.
+  bench-vs-occlusion threshold; the **default is 15 s — a physical floor on a real bench change** (a
+  player can't get to the bench, sub off, and return in less), so shorter absences are treated as
+  in-shift occlusion. Pure-stdlib core, unit-tested in `tests/test_shifts.py`.
+  - **Validated on real footage** (deterministic; shifts non-overlapping within each player;
+    `n_shifts ≤ n_fragments` always). On the 30 s reference clip (`data/sample.mp4`, `--reid
+    --roster 13`): 28 track fragments → 13 identities → **13 shifts = exactly 1.0/player** — the
+    right answer for a 30 s window, since nobody completes a bench change that fast, so every
+    player's dropouts collapse into one continuous shift. On a **3-minute clip with real line
+    changes** (`-ss 1430 -t 180`): 141 fragments → 20 identities → **61 shifts (3.0/player, avg
+    32 s)** — heavily-fragmented players collapse sensibly (12 fragments → 2 shifts) while a rotating
+    bench's per-player shift structure is preserved.
+  - **Honest limitation.** Without an explicit bench zone the threshold is the *only* thing
+    separating "off the surface" from "on the surface but undetected", and on this fisheye footage
+    the measured inter-fragment gap distribution is **not cleanly bimodal** (sub-3 s dropouts blur
+    into 5–10 s occlusions into 20–60 s bench trips), so 15 s is a defensible judgement call, not a
+    learned boundary. An earlier 3 s default over-split (it counted occlusions as bench trips: 5.2
+    shifts/player on the 3-min clip); 15 s is grounded in bench-change physics and tunable per game.
+  - *Next (deferred):* an explicit `supervision` entry/exit zone to sharpen the exact on/off instant
+    and replace the gap heuristic — the principled fix once camera geometry is plumbed through.
 
 ### Phase 4 — scale & UX
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.
