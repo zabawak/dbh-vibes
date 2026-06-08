@@ -199,8 +199,15 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
     and replace the gap heuristic — the principled fix once camera geometry is plumbed through.
 
 ### Phase 4 — scale & UX
+- **Per-game report + shift chart — the chosen next priority (#5 in [feature-ideas.md](feature-ideas.md)).**
+  Now that identity + shifts produce `players.csv`/`shifts.csv`, the next step is to *surface* those
+  stats: a per-game stat table + a **shift chart** (Gantt of who's on the surface when) + the heatmap,
+  rendered to a self-contained HTML/PNG. Picked because it is high-confidence value at low cost —
+  pure rendering over existing artifacts, no new model/GPU/labels, validatable on the reference clip
+  today — with a pure-logic layout core (testable like `shifts.py`) under a thin rendering shell.
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.
-- A simple report/dashboard per game; possibly near-real-time processing on a GPU.
+- Near-real-time processing on a GPU; a richer dashboard once event/spatial stats (ball, homography)
+  exist to populate it.
 
 For the broader, prioritized menu of stats/pipeline/UX features (ball detection, possession,
 shots/goals, movement load, dashboards, quick wins like auto-clipping and human-in-the-loop
