@@ -104,6 +104,13 @@ def build_parser() -> argparse.ArgumentParser:
              "bench change (shorter absences are treated as occlusion).",
     )
     parser.add_argument(
+        "--report",
+        metavar="RUN_DIR",
+        help="Render a self-contained per-game report (report.html + shift_chart.png) over an "
+             "already-finished run directory's players.csv/shifts.csv/boxscore.json, then exit. "
+             "Needs no video (a --phase2 --reid run also emits this automatically).",
+    )
+    parser.add_argument(
         "--evaluate",
         metavar="LABELS_CSV",
         help="Score predictions against a filled-in labels CSV (team/role/player accuracy) and "
@@ -160,6 +167,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.report:
+        return _run_report(args)
 
     if args.evaluate:
         return _run_evaluate(args)
@@ -269,9 +279,33 @@ def _run_phase2(args) -> int:
         print(f"Per-player:      {result.players_path} (identities w/ true per-player time-on-surface)")
     if result.shifts_path is not None:
         print(f"Per-shift:       {result.shifts_path} (one row per on-surface shift)")
+    if result.report_path is not None:
+        print(f"Game report:     {result.report_path} (self-contained; shift chart + stat tables)")
+    if result.shift_chart_path is not None:
+        print(f"Shift chart:     {result.shift_chart_path}")
     if result.labels_path is not None:
         print(f"Labeling set:    {result.labels_path} (+ crops/) — fill in team/role/player, "
               f"then: python -m dbh_vibes --evaluate {result.labels_path}")
+    return 0
+
+
+def _run_report(args) -> int:
+    from pathlib import Path
+
+    from dbh_vibes.report import build_report, format_report_text, write_report
+
+    run_dir = Path(args.report)
+    if not run_dir.is_dir():
+        print(f"error: run directory not found: {run_dir}", file=sys.stderr)
+        return 1
+    try:
+        paths = write_report(run_dir)
+        print(format_report_text(build_report(run_dir)))
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Game report:  {paths.html} (self-contained; shift chart + stat tables)")
+    print(f"Shift chart:  {paths.chart_png}")
     return 0
 
 

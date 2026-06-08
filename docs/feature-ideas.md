@@ -17,10 +17,12 @@ the common pinnie case, and **background-suppressed crops** nudged accuracy 52.2
 left there is *accuracy on low-contrast kits*. **Phase 3 is now in too**: appearance re-ID (priority
 #3 — per-player identity via constrained agglomerative clustering with a temporal constraint) and
 **shift detection** on top of it (priority #4 — true per-player on-surface shifts via gap-based
-bench detection). With identity + shifts done, *the headline per-player stats now exist as data*
-(`players.csv` + `shifts.csv`); the open frontiers are **(a)** making those numbers *consumable*
-(no human-facing report yet) and **(b)** the appearance-accuracy ceiling and event/spatial stats
-that gate on harder pieces (ball detection, homography). The near-term priorities are:
+bench detection). **Priority #5 is now in too**: a **per-game report + shift chart** (`report.py`)
+renders those stats into a self-contained `report.html` + `shift_chart.png`, so the headline
+per-player numbers are now both *computed and consumable*. The open frontier is the
+**appearance-accuracy ceiling** (team 56.5%; identity over-segments because SigLIP isn't a person
+re-ID model) and the event/spatial stats that gate on harder pieces (ball detection, homography).
+The near-term priorities are:
 
 1. **Labeled eval set + harness** — ✅ **done** *(was the binding constraint).* `evaluate.py` +
    `labeling.py` + the `eval/` set close it: `--label-crops` exports one crop montage per track and
@@ -67,25 +69,33 @@ that gate on harder pieces (ball detection, homography). The near-term prioritie
    so the threshold is a tunable judgement call — an explicit entry/exit zone is the deferred
    principled fix. Pure-stdlib core, unit-tested in `tests/test_shifts.py`. *(Done; see
    [docs/architecture.md](architecture.md) Phase 3.)*
-5. **Per-game report + shift chart (make the stats consumable)** — ⏭️ **next (proposed).** The
-   pipeline now *computes* the headline per-player stats (`players.csv`, `shifts.csv`) and per-team
-   totals (`boxscore.json`) plus a `heatmap.jpg`, but a user still has to read CSV/JSON to see them.
-   The highest-leverage next step is a single **per-game report** — a stat table (TOI, shifts, team
-   totals) and a **shift chart** (a Gantt of who is on the surface when, the classic "time-on-ice"
-   view) rendered to a self-contained HTML/PNG. *Why this and why now:* it is the natural capstone on
-   the just-finished identity+shift work (it has new inputs to show), it is **feasible and
-   real-footage-validatable on CPU today** (pure rendering over existing artifacts — no new model,
-   no GPU, no labels), and it converts months of accumulated stats into the thing a coach/player
-   actually looks at. The chart layout is pure logic (rows = players, bars = shifts from
-   `shifts.csv`) so it gets the same pure-core + unit-test treatment as `segments.py`/`shifts.py`,
-   with the matplotlib/HTML rendering as a thin shell. *Low–medium difficulty; depends only on done
-   pieces. See "Output & UX" below.*
-   - *Runner-up considered:* a **real re-ID/embedding upgrade** (OSNet/torchreid in place of
-     repurposed SigLIP) to lift the appearance-accuracy ceiling (team 56.5%, identity under-merges).
-     That is the deeper limitation, but it is a bigger lift with an *uncertain* gain and is hard to
-     validate cleanly without per-individual identity ground truth — so it ranks behind the report,
-     which is high-confidence value at low cost. Ball detection and homography remain the long-pole
-     unlocks for event/spatial stats but stay deferred (labeling + GPU / fisheye geometry).
+5. **Per-game report + shift chart (make the stats consumable)** — ✅ **implemented & validated on
+   real footage.** The pipeline *computed* the headline per-player stats (`players.csv`,
+   `shifts.csv`), per-team totals (`boxscore.json`) and a `heatmap.jpg`, but a user still had to read
+   CSV/JSON to see them. `report.py` turns those existing artifacts into the thing a coach/player
+   actually looks at: a self-contained **`report.html`** (game header + per-player stat table — TOI,
+   shifts, avg/longest shift — + per-team totals over *true identities* + heatmap + shift chart, every
+   image inlined as a `data:` URI) and a **shift chart** (**`shift_chart.png`**) — the classic
+   "time-on-ice" Gantt, one row per player, one bar per shift, **rows grouped by team, ordered most
+   time-on-surface first**. It adds **no model, no GPU, no labels** — pure rendering over the artifacts
+   — so it emits automatically on `--phase2 --reid` *and* runs standalone over a finished run dir
+   (`--report <run-dir>`, no video). The **chart layout is a pure-stdlib core** (rows = players, bars =
+   shifts — ordering + coordinates, no drawing), unit-tested in `tests/test_report.py` like
+   `segments.py`/`shifts.py`, with the matplotlib PNG render + HTML assembly as thin shells.
+   **Validated:** the 30 s reference clip renders 13 identities at 1 shift each (correct — too short to
+   bench); the 3-min line-change clip renders a multi-shift Gantt with the two teams cleanly grouped
+   (green T0 / red T1). *(Done; see "Output & UX" below.)*
+6. **Real re-ID/embedding upgrade (lift the appearance ceiling)** — ⏭️ **next (proposed).** With the
+   report done, the headline per-player stats are now both *computed and consumable* — so the binding
+   limitation is back to **appearance accuracy**: team clustering tops out at 56.5% on the low-contrast
+   white/dark kits, and identity re-ID over-segments (the data-driven 3-min clip split ~13–20 real
+   people into far more identities) because the repurposed SigLIP embedding isn't a person-re-ID
+   model. Swapping in a purpose-built **OSNet/torchreid** embedding (or a hockey-tuned one) in place of
+   SigLIP is the deeper unlock for *every* per-player number. It is a bigger lift with an *uncertain*
+   gain and is hard to validate cleanly without per-individual identity ground truth — hence it waited
+   behind the high-confidence, low-cost report — but it is now the highest-leverage remaining quality
+   lever. Ball detection and homography remain the long-pole unlocks for event/spatial stats but stay
+   deferred (labeling + GPU / fisheye geometry).
 
 ## Dependency map (what unlocks what)
 
@@ -94,13 +104,14 @@ detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (don
                            ├─ surface filter (done) ─── zone stats (needs homography)
                            ├─ eval harness (done) ──────── measures team/role/identity accuracy
                            ├─ team clustering (stable; kit prior; bg-suppressed crops; acc 56.5%) ─ team stats ─┐
-                           ├─ appearance re-ID (Phase 3, done) ─ per-player TOI + shifts (done) ────────────────┼─▶ per-game report + shift chart (NEXT)
+                           ├─ appearance re-ID (Phase 3, done) ─ per-player TOI + shifts (done) ────────────────┼─▶ per-game report + shift chart (done)
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones
 ```
-Most **per-player** stats gate on Phase 3 identity (now done); most **event/spatial** stats gate on
-**ball detection** and/or **homography**. The **next** step (priority #5) doesn't unlock new stats —
-it *surfaces the ones we already have* in a per-game report + shift chart.
+Most **per-player** stats gate on Phase 3 identity (now done) and are now *surfaced* by the per-game
+report + shift chart (priority #5, done); most **event/spatial** stats gate on **ball detection**
+and/or **homography**. The **next** step (priority #6) is a real **re-ID/embedding upgrade** to lift
+the appearance-accuracy ceiling that both team clustering and identity re-ID still sit under.
 
 ## Quick wins (cheap, high leverage)
 
@@ -167,15 +178,16 @@ it *surfaces the ones we already have* in a per-game report + shift chart.
 
 ## Output & UX
 
-- **Per-game report / dashboard.** ⏭️ **The chosen next priority (#5).** Stat tables (per-player TOI
-  + shift counts from `players.csv`/`shifts.csv`, per-team totals from `boxscore.json`) + the
-  `heatmap.jpg` + a **shift chart** (Gantt of who's on the surface when) rendered to a self-contained
-  HTML/PNG. Now *unblocked* — all the stats it summarizes exist. Chosen because it is high-confidence
-  value at low cost: pure rendering over existing artifacts, **no new model / GPU / labels**, and
-  validatable on the reference footage today. Suggested shape: a pure-logic layout core (rows =
-  players, bars = shifts) unit-tested like `shifts.py`, with a thin matplotlib/HTML rendering shell;
-  emit on `--phase2 --reid` (or a standalone `--report <run-dir>` over already-written CSVs).
-  *Low–medium; depends only on done pieces.*
+- **Per-game report / dashboard.** ✅ **Done (priority #5) — `report.py`.** A self-contained
+  `report.html` (game header + per-player stat table — TOI + shift counts from
+  `players.csv`/`shifts.csv` — + per-team totals over *true identities* + the `heatmap.jpg`) and a
+  **shift chart** `shift_chart.png` (Gantt of who's on the surface when, rows grouped by team and
+  ordered most-TOI-first), with every image inlined as a `data:` URI. Built exactly as planned: a
+  **pure-logic layout core** (rows = players, bars = shifts) unit-tested like `shifts.py`
+  (`tests/test_report.py`), with a thin matplotlib PNG + HTML rendering shell. Emits on
+  `--phase2 --reid` **and** runs standalone over a finished run dir (`--report <run-dir>`, no video).
+  No new model / GPU / labels — pure rendering — and validated on the reference footage (30 s clip:
+  13 identities × 1 shift; 3-min line-change clip: a multi-shift Gantt, teams cleanly grouped).
 - **Event-indexed video / highlights.** Auto-extract goals and big plays; a scrubbable timeline of
   events over the annotated video. *Medium; depends on event detection.*
 - **Stat overlays burned into video** — scoreboard, possession bar, player labels. *Low–medium.*
