@@ -49,8 +49,22 @@ With `--phase2 --reid`:
 
 - `tracks.csv` gains a `player` (identity id) and `player_conf` column.
 - **`players.csv`** — the per-player roll-up: one row per identity with summed `seconds_on_surface`
-  / `active_seconds`, `n_shifts` (fragment count), the constituent `track_ids`, a majority-vote
-  `team`, and span. **This is the true per-player time-on-surface the project set out to produce.**
+  / `active_seconds`, `n_shifts` (**true on-surface shift count** from `shifts.py`, not the raw
+  fragment count — see below), `n_fragments` (the raw count, kept for transparency), `shift_seconds`
+  / `longest_shift_s` / `avg_shift_s`, the constituent `track_ids`, a majority-vote `team`, and span.
+  **This is the true per-player time-on-surface the project set out to produce.**
+- **`shifts.csv`** — one row per on-surface shift (player, team, shift index, frame/second bounds,
+  duration, fragments stitched). `shifts.detect_shifts` stitches each identity's fragmented track
+  spans, bridging short temporal gaps (occlusion / tracker re-acquire → same shift) and splitting on
+  a bench-length gap (→ new shift); the surface filter already drops bench detections, so a bench
+  trip *is* that long temporal gap. Replaces the over-counting fragment-count shift estimate. The
+  gap threshold defaults to **15 s** — a physical floor on a real bench change (shorter absences are
+  treated as occlusion). Validated: 30 s reference clip → 28 fragments → 13 identities → **13 shifts
+  (exactly 1.0/player**, correct for a window too short to bench in); 3-minute line-change clip →
+  141 fragments → 20 identities → **61 shifts (3.0/player, avg 32 s)** — deterministic, shifts
+  non-overlapping within each player, `n_shifts ≤ n_fragments` always. (The inter-fragment gap
+  distribution on this fisheye footage is not cleanly bimodal, so the threshold is a tunable
+  judgement call; an explicit entry/exit zone would replace it — see architecture.md.)
 - The console prints `tracks -> identities`, silhouette, and how many concurrent-overlap merges the
   constraint blocked.
 

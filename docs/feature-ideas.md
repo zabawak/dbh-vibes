@@ -14,9 +14,13 @@ Phase 1–2 are in: detection + tracking, surface filter, activity gating, auto-
 heatmap, team clustering, and a **labeled eval set + harness**. Team clustering's run-to-run
 *instability is fixed* (deterministic; 100% stable on real footage), a **kit-colour prior** handles
 the common pinnie case, and **background-suppressed crops** nudged accuracy 52.2% → 56.5%; what's
-left there is *accuracy on low-contrast kits*. **Phase 3 appearance re-ID is now in too** (priority
-#3 below — per-player identity via constrained agglomerative clustering with a temporal constraint).
-The near-term priorities are:
+left there is *accuracy on low-contrast kits*. **Phase 3 is now in too**: appearance re-ID (priority
+#3 — per-player identity via constrained agglomerative clustering with a temporal constraint) and
+**shift detection** on top of it (priority #4 — true per-player on-surface shifts via gap-based
+bench detection). With identity + shifts done, *the headline per-player stats now exist as data*
+(`players.csv` + `shifts.csv`); the open frontiers are **(a)** making those numbers *consumable*
+(no human-facing report yet) and **(b)** the appearance-accuracy ceiling and event/spatial stats
+that gate on harder pieces (ball detection, homography). The near-term priorities are:
 
 1. **Labeled eval set + harness** — ✅ **done** *(was the binding constraint).* `evaluate.py` +
    `labeling.py` + the `eval/` set close it: `--label-crops` exports one crop montage per track and
@@ -46,20 +50,57 @@ The near-term priorities are:
    real identity signal — though a clean per-individual accuracy number still waits on identity
    ground truth (hard to label by sight at this crop resolution). *(Done; see
    [docs/identity-reid.md](identity-reid.md).)*
+4. **Shift detection (per-player time-on-surface broken into shifts)** — ✅ **implemented & validated
+   on real footage.** The headline "time on ice" stat, now unblocked by Phase 3 identity. `shifts.py`
+   (`detect_shifts`, emitted with `--reid`) segments each identity's timeline into **true on-surface
+   shifts**: it stitches the identity's fragmented track spans, **bridging short temporal gaps** (an
+   occlusion / tracker re-acquire → same shift) and **splitting on a bench-length gap** (→ a new
+   shift). Because the Phase 2 surface filter already drops off-surface (bench) detections, a bench
+   trip is a long dark stretch in the identity's on-surface timeline — so the *temporal gap is the
+   bench signal*, no hand-drawn bench polygon needed. This **replaces the old `n_shifts = fragment
+   count`**, which over-counted on every brief tracker dropout of a still-on-surface player. Writes
+   `shifts.csv` (one row per shift) and adds `n_shifts` (true) / `n_fragments` (raw) / `shift_seconds`
+   / `longest_shift_s` / `avg_shift_s` to `players.csv`; `--shift-gap` tunes the bench-vs-occlusion
+   threshold (default **15 s**, a physical floor on a real bench change). Validated: 30 s clip → 1.0
+   shift/player (correct — too short to bench in), 3-min line-change clip → 3.0/player (avg 32 s).
+   Honest caveat: the inter-fragment gap distribution on this fisheye footage isn't cleanly bimodal,
+   so the threshold is a tunable judgement call — an explicit entry/exit zone is the deferred
+   principled fix. Pure-stdlib core, unit-tested in `tests/test_shifts.py`. *(Done; see
+   [docs/architecture.md](architecture.md) Phase 3.)*
+5. **Per-game report + shift chart (make the stats consumable)** — ⏭️ **next (proposed).** The
+   pipeline now *computes* the headline per-player stats (`players.csv`, `shifts.csv`) and per-team
+   totals (`boxscore.json`) plus a `heatmap.jpg`, but a user still has to read CSV/JSON to see them.
+   The highest-leverage next step is a single **per-game report** — a stat table (TOI, shifts, team
+   totals) and a **shift chart** (a Gantt of who is on the surface when, the classic "time-on-ice"
+   view) rendered to a self-contained HTML/PNG. *Why this and why now:* it is the natural capstone on
+   the just-finished identity+shift work (it has new inputs to show), it is **feasible and
+   real-footage-validatable on CPU today** (pure rendering over existing artifacts — no new model,
+   no GPU, no labels), and it converts months of accumulated stats into the thing a coach/player
+   actually looks at. The chart layout is pure logic (rows = players, bars = shifts from
+   `shifts.csv`) so it gets the same pure-core + unit-test treatment as `segments.py`/`shifts.py`,
+   with the matplotlib/HTML rendering as a thin shell. *Low–medium difficulty; depends only on done
+   pieces. See "Output & UX" below.*
+   - *Runner-up considered:* a **real re-ID/embedding upgrade** (OSNet/torchreid in place of
+     repurposed SigLIP) to lift the appearance-accuracy ceiling (team 56.5%, identity under-merges).
+     That is the deeper limitation, but it is a bigger lift with an *uncertain* gain and is hard to
+     validate cleanly without per-individual identity ground truth — so it ranks behind the report,
+     which is high-confidence value at low cost. Ball detection and homography remain the long-pole
+     unlocks for event/spatial stats but stay deferred (labeling + GPU / fisheye geometry).
 
 ## Dependency map (what unlocks what)
 
 ```
-detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation
+detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (done) ── shift segmentation (done)
                            ├─ surface filter (done) ─── zone stats (needs homography)
                            ├─ eval harness (done) ──────── measures team/role/identity accuracy
-                           ├─ team clustering (stable; kit prior; bg-suppressed crops; acc 56.5%) ─ team stats
-                           ├─ appearance re-ID (Phase 3, done) ─ per-player TOI + shifts (players.csv)
+                           ├─ team clustering (stable; kit prior; bg-suppressed crops; acc 56.5%) ─ team stats ─┐
+                           ├─ appearance re-ID (Phase 3, done) ─ per-player TOI + shifts (done) ────────────────┼─▶ per-game report + shift chart (NEXT)
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones
 ```
-Most **per-player** stats gate on Phase 3 identity; most **event/spatial** stats gate on **ball
-detection** and/or **homography**.
+Most **per-player** stats gate on Phase 3 identity (now done); most **event/spatial** stats gate on
+**ball detection** and/or **homography**. The **next** step (priority #5) doesn't unlock new stats —
+it *surfaces the ones we already have* in a per-game report + shift chart.
 
 ## Quick wins (cheap, high leverage)
 
@@ -91,8 +132,11 @@ detection** and/or **homography**.
 
 ## Stats & analytics (the end product)
 
-- **Shift / time-on-surface per player** — the headline "time on ice." *Depends on Phase 3 identity
-  + bench-zone detection.*
+- **Shift / time-on-surface per player** — the headline "time on ice." *(Done — `shifts.py`,
+  `--reid`.)* Identity (Phase 3) plus gap-based shift segmentation: the surface filter makes a bench
+  trip a long temporal gap in a player's on-surface timeline, so shifts split on bench-length gaps
+  and stitch across brief tracker dropouts (`shifts.csv` + `n_shifts`/`shift_seconds` in
+  `players.csv`). *Next:* an explicit entry/exit zone to sharpen the exact on/off instant.*
 - **Plus/minus & on-surface context** — who was on when goals happened. *Depends on identity + goal
   detection.*
 - **Ball detection & possession** — track the ball; attribute possession to nearest player/team,
@@ -123,8 +167,15 @@ detection** and/or **homography**.
 
 ## Output & UX
 
-- **Per-game report / dashboard.** Stat tables + heatmaps + a shift chart (Gantt of who's on when).
-  *Medium; depends on the stats it summarizes.*
+- **Per-game report / dashboard.** ⏭️ **The chosen next priority (#5).** Stat tables (per-player TOI
+  + shift counts from `players.csv`/`shifts.csv`, per-team totals from `boxscore.json`) + the
+  `heatmap.jpg` + a **shift chart** (Gantt of who's on the surface when) rendered to a self-contained
+  HTML/PNG. Now *unblocked* — all the stats it summarizes exist. Chosen because it is high-confidence
+  value at low cost: pure rendering over existing artifacts, **no new model / GPU / labels**, and
+  validatable on the reference footage today. Suggested shape: a pure-logic layout core (rows =
+  players, bars = shifts) unit-tested like `shifts.py`, with a thin matplotlib/HTML rendering shell;
+  emit on `--phase2 --reid` (or a standalone `--report <run-dir>` over already-written CSVs).
+  *Low–medium; depends only on done pieces.*
 - **Event-indexed video / highlights.** Auto-extract goals and big plays; a scrubbable timeline of
   events over the annotated video. *Medium; depends on event detection.*
 - **Stat overlays burned into video** — scoreboard, possession bar, player labels. *Low–medium.*

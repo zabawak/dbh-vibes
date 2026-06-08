@@ -167,13 +167,47 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
 - **Other constraints to respect.** Appearance is consistent only *within* a game (re-build the
   gallery per game); lighting drifts over a long game; players add/remove layers. Let roster size
   be configurable or auto-determined from clustering quality.
-- **Shift detection.** Once identities are stable, model the bench / entry-exit zones (a
-  `supervision` line/polygon zone) so a player crossing on/off the surface starts/stops a shift
-  cleanly → line changes, goals/assists attribution.
+- **Shift detection — implemented (`shifts.py`, emitted with `--reid`).** Once identities are
+  stable, a player's *true shifts* are the contiguous on-surface stretches of their identity.
+  `detect_shifts` stitches each identity's fragmented track spans, **bridging short temporal gaps**
+  (an occlusion / tracker re-acquire — still the same shift) and **splitting on a bench-length gap**
+  (the player went to the bench and came back — a new shift). The Phase 2 surface filter already
+  drops off-surface (bench) detections, so a bench trip shows up as a long dark stretch in the
+  identity's on-surface timeline — i.e. the *temporal gap is the bench signal*, riding on the
+  surface filter with no hand-drawn bench polygon. This replaces the prior `n_shifts = fragment
+  count`, which over-counted every time the tracker briefly lost a still-on-surface player. Outputs
+  `shifts.csv` (one row per on-surface shift) and adds `n_shifts` (true) / `n_fragments` (raw) /
+  `shift_seconds` / `longest_shift_s` / `avg_shift_s` to `players.csv`. `--shift-gap` sets the
+  bench-vs-occlusion threshold; the **default is 15 s — a physical floor on a real bench change** (a
+  player can't get to the bench, sub off, and return in less), so shorter absences are treated as
+  in-shift occlusion. Pure-stdlib core, unit-tested in `tests/test_shifts.py`.
+  - **Validated on real footage** (deterministic; shifts non-overlapping within each player;
+    `n_shifts ≤ n_fragments` always). On the 30 s reference clip (`data/sample.mp4`, `--reid
+    --roster 13`): 28 track fragments → 13 identities → **13 shifts = exactly 1.0/player** — the
+    right answer for a 30 s window, since nobody completes a bench change that fast, so every
+    player's dropouts collapse into one continuous shift. On a **3-minute clip with real line
+    changes** (`-ss 1430 -t 180`): 141 fragments → 20 identities → **61 shifts (3.0/player, avg
+    32 s)** — heavily-fragmented players collapse sensibly (12 fragments → 2 shifts) while a rotating
+    bench's per-player shift structure is preserved.
+  - **Honest limitation.** Without an explicit bench zone the threshold is the *only* thing
+    separating "off the surface" from "on the surface but undetected", and on this fisheye footage
+    the measured inter-fragment gap distribution is **not cleanly bimodal** (sub-3 s dropouts blur
+    into 5–10 s occlusions into 20–60 s bench trips), so 15 s is a defensible judgement call, not a
+    learned boundary. An earlier 3 s default over-split (it counted occlusions as bench trips: 5.2
+    shifts/player on the 3-min clip); 15 s is grounded in bench-change physics and tunable per game.
+  - *Next (deferred):* an explicit `supervision` entry/exit zone to sharpen the exact on/off instant
+    and replace the gap heuristic — the principled fix once camera geometry is plumbed through.
 
 ### Phase 4 — scale & UX
+- **Per-game report + shift chart — the chosen next priority (#5 in [feature-ideas.md](feature-ideas.md)).**
+  Now that identity + shifts produce `players.csv`/`shifts.csv`, the next step is to *surface* those
+  stats: a per-game stat table + a **shift chart** (Gantt of who's on the surface when) + the heatmap,
+  rendered to a self-contained HTML/PNG. Picked because it is high-confidence value at low cost —
+  pure rendering over existing artifacts, no new model/GPU/labels, validatable on the reference clip
+  today — with a pure-logic layout core (testable like `shifts.py`) under a thin rendering shell.
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.
-- A simple report/dashboard per game; possibly near-real-time processing on a GPU.
+- Near-real-time processing on a GPU; a richer dashboard once event/spatial stats (ball, homography)
+  exist to populate it.
 
 For the broader, prioritized menu of stats/pipeline/UX features (ball detection, possession,
 shots/goals, movement load, dashboards, quick wins like auto-clipping and human-in-the-loop
