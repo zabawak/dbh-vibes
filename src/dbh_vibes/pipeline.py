@@ -125,6 +125,8 @@ class Phase2Result:
     players_path: Path | None = None
     shifts_path: Path | None = None
     n_shifts: int | None = None
+    report_path: Path | None = None
+    shift_chart_path: Path | None = None
 
 
 def run_phase2(
@@ -368,6 +370,18 @@ def run_phase2(
     )
     write_boxscore_json(boxscore_path, boxscore)
 
+    # ---- Per-game report + shift chart (priority #5) ----
+    # Pure rendering over the artifacts just written; only meaningful once re-ID has produced
+    # per-player identities + shifts (otherwise there is no shift chart to draw).
+    report_path: Path | None = None
+    shift_chart_path: Path | None = None
+    if reid and players_path is not None:
+        from dbh_vibes.report import write_report
+
+        paths = write_report(out_dir)
+        report_path = paths.html
+        shift_chart_path = paths.chart_png
+
     return Phase2Result(
         annotated_path=annotated_path, heatmap_path=heatmap_path, csv_path=csv_path,
         segments_path=segments_path, boxscore_path=boxscore_path, fps=fps,
@@ -378,6 +392,7 @@ def run_phase2(
         team_quality=team_quality, labels_path=labels_path,
         identity_quality=identity_quality, players_path=players_path,
         shifts_path=shifts_path, n_shifts=n_shifts,
+        report_path=report_path, shift_chart_path=shift_chart_path,
     )
 
 

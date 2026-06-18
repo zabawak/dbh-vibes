@@ -199,12 +199,21 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
     and replace the gap heuristic — the principled fix once camera geometry is plumbed through.
 
 ### Phase 4 — scale & UX
-- **Per-game report + shift chart — the chosen next priority (#5 in [feature-ideas.md](feature-ideas.md)).**
-  Now that identity + shifts produce `players.csv`/`shifts.csv`, the next step is to *surface* those
-  stats: a per-game stat table + a **shift chart** (Gantt of who's on the surface when) + the heatmap,
-  rendered to a self-contained HTML/PNG. Picked because it is high-confidence value at low cost —
-  pure rendering over existing artifacts, no new model/GPU/labels, validatable on the reference clip
-  today — with a pure-logic layout core (testable like `shifts.py`) under a thin rendering shell.
+- **Per-game report + shift chart — implemented (`report.py`, priority #5).** Identity + shifts
+  produce `players.csv`/`shifts.csv`; this *surfaces* them. Emits a self-contained **`report.html`**
+  (game header + per-player stat table — TOI, shifts, avg/longest — + per-team totals over true
+  identities + the heatmap + the shift chart, every image inlined as a `data:` URI) and a **shift
+  chart** **`shift_chart.png`** — the classic time-on-ice Gantt, one row per player, one bar per
+  shift, **rows grouped by team and ordered most-time-on-surface first**. No new model/GPU/labels —
+  pure rendering over the already-written artifacts. The **chart layout is a pure-stdlib core**
+  (`build_shift_chart`: rows = players, bars = shifts — ordering + coordinates, no drawing),
+  unit-tested in `tests/test_report.py` like `segments.py`/`shifts.py`, with a thin matplotlib PNG +
+  HTML-assembly shell. Emits on `--phase2 --reid` and runs **standalone** over a finished run dir
+  (`--report <run-dir>`, no video). Validated on real footage: the 30 s reference clip → 13 identities
+  at 1 shift each (correct for a window too short to bench in); the 3-min line-change clip → a
+  multi-shift Gantt with the two teams cleanly grouped.
+  - *Next (priority #6):* a real **re-ID/embedding upgrade** (OSNet/torchreid) to lift the appearance
+    ceiling that both team clustering (56.5%) and identity (over-segments) still sit under.
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.
 - Near-real-time processing on a GPU; a richer dashboard once event/spatial stats (ball, homography)
   exist to populate it.

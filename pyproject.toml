@@ -9,6 +9,7 @@ dependencies = [
     "opencv-python>=4.10.0",
     "numpy>=1.26.0",
     "pandas>=2.2.0",
+    "matplotlib>=3.5.0",   # per-game shift-chart PNG (report.py); also a transitive ultralytics dep
 ]
 
 [project.optional-dependencies]

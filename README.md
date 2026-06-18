@@ -103,6 +103,33 @@ python -m dbh_vibes data/game.mp4 --out runs/game --phase2 --reid            # d
 python -m dbh_vibes data/game.mp4 --out runs/game --phase2 --reid --roster 13  # pin roster size
 ```
 
+### Per-game report + shift chart (`--reid` emits it; standalone `--report`)
+
+The pipeline *computes* the headline per-player stats (`players.csv`, `shifts.csv`), per-team totals
+(`boxscore.json`) and a `heatmap.jpg`, but reading CSV/JSON isn't how a coach looks at a game. The
+**report** (`report.py`) turns those existing artifacts into the thing they actually look at — no new
+model, no GPU, no labels, just rendering:
+
+- A self-contained **`report.html`** — a game header, a per-player stat table (TOI, shifts,
+  avg/longest shift), per-team totals (over *true identities*, not fragmented tracks), the position
+  heatmap, and the shift chart — with every image inlined as a `data:` URI so the single file is
+  portable.
+- A **shift chart** (**`shift_chart.png`**) — the classic "time-on-ice" Gantt: one row per player,
+  one bar per shift, **rows grouped by team and ordered most-time-on-surface first**, so you can read
+  who was on the surface when at a glance.
+
+The chart **layout is a pure-stdlib core** (rows = players, bars = shifts — ordering + coordinates,
+no drawing) unit-tested like `segments.py`/`shifts.py`, with the matplotlib PNG render and the HTML
+assembly as thin shells. It emits automatically on any `--phase2 --reid` run, and runs **standalone**
+over a finished run directory (no video needed):
+
+```bash
+python -m dbh_vibes --report runs/game     # render report.html + shift_chart.png from the CSVs
+```
+
+Validated on real footage: a 30 s clip renders 13 identities at 1 shift each (correct — too short to
+bench), and a 3-min line-change clip renders a multi-shift Gantt with the two teams cleanly grouped.
+
 ### Auto-clip pre-pass (`--autoclip`) — skip dead time *before* the heavy pass
 
 A full game is mostly dead time, so running the whole pipeline over all 38 minutes is wasteful.
