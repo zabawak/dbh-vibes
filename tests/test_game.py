@@ -1,11 +1,19 @@
-"""Tests for full-game mode's pure cores: the live-time axis and cross-segment identity merge."""
+"""Tests for full-game mode: the live-time axis, cross-segment identity merge, and stats merge."""
 
 from __future__ import annotations
+
+import csv
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from dbh_vibes.game import GameIdentityMerge, LiveTimeline, merge_segment_identities
+from dbh_vibes.game import (
+    GameIdentityMerge,
+    LiveTimeline,
+    _write_game_stats,
+    merge_segment_identities,
+)
 from dbh_vibes.segments import PlaySegment
 
 
@@ -97,3 +105,69 @@ class TestMergeSegmentIdentities:
         merge = merge_segment_identities(segs, distance_threshold=0.2)
         assert set(merge.game_id) == {(s, i) for s in range(2) for i in range(3)}
         assert set(merge.game_id.values()) == set(range(merge.n_game_players))
+
+
+class TestWriteGameStats:
+    """The I/O merge over per-segment tracks.csv files, on a synthetic two-segment game."""
+
+    @pytest.fixture()
+    def game_dir(self, tmp_path: Path) -> Path:
+        # Two 30s live segments (fps 30) separated by a 30s stoppage; the same two people play in
+        # both (game ids 0/1 via the merge fixture); one spectator row must be ignored.
+        segs = [PlaySegment(index=0, start_frame=0, end_frame=899),
+                PlaySegment(index=1, start_frame=1800, end_frame=2699)]
+        for seg in segs:
+            d = tmp_path / f"seg_{seg.index:03d}"
+            d.mkdir()
+            with (d / "tracks.csv").open("w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=["track_id", "role", "team", "player",
+                                                  "first_frame", "last_frame", "frames_seen",
+                                                  "active_seconds"])
+                w.writeheader()
+                w.writerow({"track_id": 1, "role": "player", "team": 0, "player": 0,
+                            "first_frame": 0, "last_frame": 890, "frames_seen": 880,
+                            "active_seconds": 29.0})
+                w.writerow({"track_id": 2, "role": "player", "team": 1, "player": 1,
+                            "first_frame": 10, "last_frame": 880, "frames_seen": 850,
+                            "active_seconds": 28.0})
+                w.writerow({"track_id": 3, "role": "spectator", "team": "", "player": "",
+                            "first_frame": 0, "last_frame": 100, "frames_seen": 90,
+                            "active_seconds": 0.0})
+        self.segments = segs
+        return tmp_path
+
+    def _merge(self) -> GameIdentityMerge:
+        return GameIdentityMerge(
+            game_id={(0, 0): 0, (0, 1): 1, (1, 0): 0, (1, 1): 1},
+            n_game_players=2, n_segment_identities=4, n_blocked_merges=0,
+        )
+
+    def test_stoppage_does_not_split_shifts(self, game_dir: Path):
+        _, shifts_csv = _write_game_stats(
+            game_dir, self.segments, [game_dir / "seg_000", game_dir / "seg_001"],
+            self._merge(), 30.0, 15.0,
+            total_seconds=90.0, live_seconds=60.0, active_fraction=0.66,
+        )
+        rows = list(csv.DictReader(shifts_csv.open()))
+        # One shift per player: the 30s dead gap is compressed on the live axis and bridged.
+        assert [r["player"] for r in rows] == ["0", "1"]
+        p0 = rows[0]
+        assert float(p0["end_time_s"]) > 60.0            # span reaches into segment 1 (game time)
+        assert float(p0["duration_s"]) < 61.0            # but duration counts only live seconds
+
+    def test_players_rollup_and_report_schema(self, game_dir: Path):
+        players_csv, _ = _write_game_stats(
+            game_dir, self.segments, [game_dir / "seg_000", game_dir / "seg_001"],
+            self._merge(), 30.0, 15.0,
+            total_seconds=90.0, live_seconds=60.0, active_fraction=0.66,
+        )
+        rows = {r["player"]: r for r in csv.DictReader(players_csv.open())}
+        assert set(rows) == {"0", "1"}                    # spectator ignored
+        assert rows["0"]["n_fragments"] == "2"
+        assert rows["0"]["track_ids"] == "s0:1 s1:1"
+        assert rows["0"]["team"] == "0"
+        # The standard report renders over the merged artifacts unchanged.
+        from dbh_vibes.report import write_report
+
+        paths = write_report(game_dir, title="synthetic game")
+        assert paths.html.exists() and paths.chart_png.exists()
