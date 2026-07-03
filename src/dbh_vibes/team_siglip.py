@@ -544,18 +544,21 @@ def detect_kit_split(
 # --------------------------------------------------------------------------------------------
 
 def embed_tracks(
-    embedder: SiglipTeamClassifier,
+    embedder,
     track_crops: dict[int, list[np.ndarray]],
     *,
     suppress_background: bool = True,
 ) -> tuple[list[int], np.ndarray]:
     """Embed a track's sampled crops and pool them into one mean embedding per track.
 
-    Returns ``(present_ids, track_emb)`` where ``track_emb`` rows align to ``present_ids`` (the
-    track ids that had at least one crop). With ``suppress_background`` each crop is torso-cropped
-    and its rink-coloured background neutralised before embedding, so SigLIP keys on the kit, not the
-    blue rink. Factored out so the pipeline runs the (expensive) SigLIP pass *once* and shares the
-    per-track embeddings between team clustering and Phase 3 identity re-ID.
+    ``embedder`` is anything with an ``embed(crops) -> (N, D)`` method — the SigLIP embedder here or
+    the OSNet re-ID embedder (``reid_embedder.OsnetEmbedder``). Returns ``(present_ids, track_emb)``
+    where ``track_emb`` rows align to ``present_ids`` (the track ids that had at least one crop).
+    With ``suppress_background`` each crop is torso-cropped and its rink-coloured background
+    neutralised before embedding, so the model keys on the kit, not the blue rink (right for SigLIP;
+    leave it off for OSNet, which is trained on full-body crops). Factored out so the pipeline runs
+    the (expensive) embedding pass *once* and shares the per-track embeddings between team
+    clustering and Phase 3 identity re-ID.
     """
     present_ids = [t for t in sorted(track_crops) if track_crops.get(t)]
     flat_crops: list[np.ndarray] = []
@@ -565,7 +568,8 @@ def embed_tracks(
             flat_crops.append(crop)
             owners.append(tid)
     if not flat_crops:
-        return [], np.empty((0, EMBED_DIM), dtype=np.float64)
+        dim = getattr(embedder, "embed_dim", EMBED_DIM)
+        return [], np.empty((0, dim), dtype=np.float64)
     embed_crops = (
         [background_suppressed_crop(c) for c in flat_crops] if suppress_background else flat_crops
     )
@@ -593,7 +597,7 @@ class TeamAssignment:
 
 
 def assign_teams(
-    embedder: SiglipTeamClassifier,
+    embedder,
     track_crops: dict[int, list[np.ndarray]],
     *,
     suppress_background: bool = True,
