@@ -44,6 +44,12 @@ ffmpeg -y -ss 1490 -i data/_full_game.mp4 -t 30 -vf "scale=1280:-2,fps=30" -an d
 
 # Lull / "middle" (~19:00) — a break in play, everyone at the bench (idle-detection test)
 ffmpeg -y -ss 1137 -i data/_full_game.mp4 -t 30 -vf "scale=1280:-2,fps=30" -an data/sample_mid.mp4
+
+# 3 minutes with real line changes (~23:50) — the shift-detection / re-ID stress clip
+ffmpeg -y -ss 1430 -i data/_full_game.mp4 -t 180 -vf "scale=1280:-2,fps=30" -an data/sample_3min.mp4
+
+# 10-minute slice with gameplay + stoppages (~23:20) — the --game full-game-mode validation slice
+ffmpeg -y -ss 1400 -i data/_full_game.mp4 -t 600 -vf "scale=1280:-2,fps=30" -an data/game_10min.mp4
 ```
 
 Note: the middle third of this recording is downtime between games — pick `-ss` around the
