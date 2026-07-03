@@ -223,3 +223,28 @@ multi-track identity matches the hand team labels — including the three-fragme
 `7 → 280 → 550` that appearance alone never found. The two still-unmerged known pairs are separated
 by *long* gaps (bench trips), which is exactly the case handoffs must not touch — that recall
 belongs to appearance/ground-truth work.
+
+### 3-minute-clip ablation — and a bias in the team-purity validator worth knowing about
+
+Handoffs on vs off on the line-change clip (156 fragments, OSNet, defaults):
+
+| config | identities | merged pairs | cross-team (predicted teams) | silhouette |
+|---|---|---|---|---|
+| appearance only (`--handoff-gap 0`) | 56 | 271 | 2 (0.7%) | 0.11 |
+| + handoffs (40 links) | 56 | 244 | 13 (5.3%) | −0.03 |
+
+Read naively, handoffs look worse here — but the **team-purity check is circular for appearance
+merges**: the team head and the identity clustering consume the *same* per-track embedding, so an
+appearance merge is nearly guaranteed to be "team-consistent" whether or not it is the same person.
+Handoff links are the only merges made from *independent* (physical) evidence, so they are the only
+ones that can surface team-head mistakes — and the sub-second-gap "cross-team" pairs here have
+exactly that signature (gaps of 0.2–0.9 s with an unambiguous adjacent re-entry, one fragment with
+low `team_conf`). On the 30 s clip, where **human** team labels exist, handoff merges were 8/8
+correct while appearance-only found 1/6 known same-person pairs.
+
+Two honest caveats stand: (1) pre-merged handoff groups change average-linkage geometry, which
+admitted a few *new long-gap appearance merges* downstream (e.g. one 90 s-gap pair with team_conf
+0.45/0.66) — these, not the handoffs, are the plausible real errors; (2) the appearance silhouette
+drops with handoffs because handoff groups are appearance-heterogeneous — that is the point of
+using non-appearance evidence, not a regression. Adjudicating both properly needs per-individual
+ground truth (the frame-level review tool, next-priorities #1c).
