@@ -61,7 +61,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-bg-suppress",
         action="store_true",
         help="With --phase2, embed raw crops instead of background-suppressed ones (ablation; "
-             "the suppressed crops mask the rink before SigLIP so it keys on the kit, not the rink).",
+             "the suppressed crops mask the rink before SigLIP so it keys on the kit, not the rink). "
+             "Default is per-embedder: suppression ON for siglip, OFF for osnet (full-body model).",
+    )
+    parser.add_argument(
+        "--embedder",
+        default="siglip",
+        choices=["siglip", "osnet"],
+        help="Appearance embedding shared by team clustering + identity re-ID. 'siglip' is the "
+             "original general image embedding; 'osnet' is a purpose-built person re-ID network "
+             "(OSNet-AIN, ~10x faster per crop; downloads ~56MB weights on first use).",
+    )
+    parser.add_argument(
+        "--reid-weights",
+        default=None,
+        help="With --embedder osnet, which checkpoint to use: a named torchreid checkpoint "
+             "('msdc' domain-generalized [default], 'msmt17') or a path to a .pth file.",
     )
     parser.add_argument(
         "--clips",
@@ -90,9 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reid-distance",
         type=float,
-        default=0.35,
+        default=None,
         help="With --reid (and no --roster), cosine-distance threshold for merging track fragments "
-             "into one identity (lower = more, smaller identities; default: 0.35).",
+             "into one identity (lower = more, smaller identities). Default is per-embedder "
+             "(siglip: 0.35, osnet: tuned separately — the embedding spaces scale differently).",
     )
     parser.add_argument(
         "--shift-gap",
@@ -111,6 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
              "Needs no video (a --phase2 --reid run also emits this automatically).",
     )
     parser.add_argument(
+        "--apply-labels",
+        metavar="LABELS_CSV",
+        help="Apply a filled-in labels CSV to the finished run in --out: human team/player names "
+             "propagate through the team + identity clusters into tracks.csv/players.csv, and the "
+             "report re-renders with real names. Needs no video.",
+    )
+    parser.add_argument(
         "--evaluate",
         metavar="LABELS_CSV",
         help="Score predictions against a filled-in labels CSV (team/role/player accuracy) and "
@@ -120,6 +143,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--tracks",
         metavar="TRACKS_CSV",
         help="With --evaluate, the predictions CSV to score (default: <out>/tracks.csv).",
+    )
+    parser.add_argument(
+        "--game",
+        action="store_true",
+        help="Full-game mode: autoclip pre-pass finds live play, each segment is cut "
+             "(frame-accurate) and analyzed with --phase2 --reid, then per-segment identities are "
+             "stitched into game-level players and one merged game report is written. Honors "
+             "--model/--embedder/--roster/--shift-gap and the --autoclip knobs "
+             "(--clip-stride/--min-segment/--merge-gap/--pad).",
+    )
+    parser.add_argument(
+        "--max-segments",
+        type=int,
+        default=None,
+        help="With --game, analyze at most this many live segments (in time order) — keeps a "
+             "first CPU run of a long game bounded. Default: all.",
     )
     parser.add_argument(
         "--autoclip",
@@ -171,12 +210,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         return _run_report(args)
 
+    if args.apply_labels:
+        return _run_apply_labels(args)
+
     if args.evaluate:
         return _run_evaluate(args)
 
     if args.video is None:
         print("error: a video path is required (or use --evaluate LABELS_CSV)", file=sys.stderr)
         return 1
+
+    if args.game:
+        return _run_game(args)
 
     if args.autoclip:
         return _run_autoclip(args)
@@ -227,11 +272,13 @@ def _run_phase2(args) -> int:
             filter_to_surface=not args.no_surface_filter,
             write_clips=args.clips,
             export_labels=args.label_crops,
-            suppress_background=not args.no_bg_suppress,
+            suppress_background=False if args.no_bg_suppress else None,
             reid=args.reid,
             roster_size=args.roster,
             reid_distance=args.reid_distance,
             shift_gap_seconds=args.shift_gap,
+            embedder=args.embedder,
+            reid_weights=args.reid_weights,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -251,7 +298,7 @@ def _run_phase2(args) -> int:
     if result.team_seconds:
         q = result.team_quality
         if q is not None:
-            method = "kit-colour prior" if q.method == "kit-color" else "SigLIP embeddings"
+            method = "kit-colour prior" if q.method == "kit-color" else f"{q.method} embeddings"
             print(f"Team clustering [{method}]: {q.team_sizes[0]} vs {q.team_sizes[1]} tracks, "
                   f"silhouette {q.silhouette:.2f}, {q.n_micro} micro-cluster(s) "
                   f"(higher silhouette = cleaner split)")
@@ -309,6 +356,18 @@ def _run_report(args) -> int:
     return 0
 
 
+def _run_apply_labels(args) -> int:
+    from dbh_vibes.roster import apply_labels_to_run, format_apply_summary
+
+    try:
+        result = apply_labels_to_run(args.out, args.apply_labels)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(format_apply_summary(result))
+    return 0
+
+
 def _run_evaluate(args) -> int:
     from pathlib import Path
 
@@ -326,6 +385,25 @@ def _run_evaluate(args) -> int:
 
     report = evaluate(labels_csv, tracks_csv)
     print(format_report(report))
+    return 0
+
+
+def _run_game(args) -> int:
+    from dbh_vibes.game import format_game_summary, run_game
+
+    try:
+        result = run_game(
+            args.video, args.out,
+            model_name=args.model, conf=args.conf, stride=args.clip_stride,
+            min_segment_seconds=args.min_segment, merge_gap_seconds=args.merge_gap,
+            pad_seconds=args.pad, embedder=args.embedder, reid_weights=args.reid_weights,
+            roster=args.roster, reid_distance=args.reid_distance,
+            shift_gap_seconds=args.shift_gap, max_segments=args.max_segments,
+        )
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(format_game_summary(result))
     return 0
 
 
