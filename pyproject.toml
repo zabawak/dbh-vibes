@@ -19,6 +19,7 @@ dependencies = [
 phase2 = [
     "transformers>=4.45.0",
     "scikit-learn>=1.5.0",
+    "gdown>=5.0",          # fetches the OSNet re-ID checkpoint (torchreid model zoo) on first use
 ]
 # Test tooling. The segmentation tests are pure-stdlib and run without the heavy CV deps:
 #   pip install -e ".[dev]" && pytest

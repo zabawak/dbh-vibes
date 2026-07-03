@@ -46,6 +46,22 @@ TEAM_COLORS_BGR = {0: (60, 220, 60), 1: (60, 60, 240)}  # green / red
 SPECTATOR_COLOR_BGR = (130, 130, 130)  # gray for off-surface detections
 UNKNOWN_COLOR_BGR = (200, 200, 200)
 
+# Identity-merge cosine-distance defaults per embedder (used when reid_distance is None). The two
+# models produce differently-scaled embedding spaces, so one threshold cannot serve both; each was
+# tuned on the reference 3-min line-change clip (see docs/identity-reid.md).
+REID_DISTANCE_DEFAULTS = {"siglip": 0.35, "osnet": 0.45}
+
+
+def _build_embedder(name: str, reid_weights: str | None):
+    """Construct the appearance embedder shared by team clustering and identity re-ID."""
+    if name == "osnet":
+        from dbh_vibes.reid_embedder import OsnetEmbedder
+
+        return OsnetEmbedder(**({"weights": reid_weights} if reid_weights else {}))
+    if name == "siglip":
+        return SiglipTeamClassifier()
+    raise ValueError(f"unknown embedder {name!r} (expected 'siglip' or 'osnet')")
+
 
 @dataclass
 class TrackStat:
@@ -143,13 +159,22 @@ def run_phase2(
     crops_per_track: int = 6,
     write_clips: bool = False,
     export_labels: bool = False,
-    suppress_background: bool = True,
+    suppress_background: bool | None = None,
     reid: bool = False,
     roster_size: int | None = None,
-    reid_distance: float = 0.35,
+    reid_distance: float | None = None,
     shift_gap_seconds: float = 15.0,
+    embedder: str = "siglip",
+    reid_weights: str | None = None,
 ) -> Phase2Result:
-    """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats."""
+    """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats.
+
+    ``embedder`` selects the appearance model shared by team clustering and Phase 3 identity:
+    ``"siglip"`` (the original general image embedding) or ``"osnet"`` (a purpose-built person
+    re-ID network — see ``reid_embedder.py``). ``suppress_background``/``reid_distance`` default
+    per embedder (``None`` = auto): background suppression helps SigLIP but breaks OSNet's
+    full-body input distribution, and the two models' cosine-distance scales differ.
+    """
     source = Path(source)
     if not source.exists():
         raise FileNotFoundError(f"Input video not found: {source}")
@@ -238,17 +263,21 @@ def run_phase2(
     identity_quality: IdentityQuality | None = None
     player_crops = {t: track_crops[t] for t in players if track_crops.get(t)}
     if (use_siglip_teams or reid) and player_crops:
-        embedder = SiglipTeamClassifier()
+        emb_model = _build_embedder(embedder, reid_weights)
+        if suppress_background is None:  # auto: on for SigLIP, off for OSNet (full-body training)
+            suppress_background = getattr(emb_model, "default_suppress_background", True)
+        if reid_distance is None:
+            reid_distance = REID_DISTANCE_DEFAULTS.get(embedder, 0.35)
         precomputed = None
         if reid:  # identity can't be done by colour alone — embed up front and share with team
             present_ids, track_emb = embed_tracks(
-                embedder, player_crops, suppress_background=suppress_background
+                emb_model, player_crops, suppress_background=suppress_background
             )
             precomputed = (present_ids, track_emb)
 
         if use_siglip_teams:
             assignment = assign_teams(
-                embedder, player_crops, suppress_background=suppress_background,
+                emb_model, player_crops, suppress_background=suppress_background,
                 precomputed=precomputed,
             )
             for tid, team in assignment.track_team.items():
@@ -258,7 +287,8 @@ def run_phase2(
                 silhouette=assignment.silhouette,
                 team_sizes=assignment.team_sizes,
                 n_micro=assignment.info.n_micro,
-                method=assignment.info.method,
+                # The embedding path reports which embedder actually produced the split.
+                method=assignment.info.method if assignment.info.method == "kit-color" else embedder,
             )
 
         if reid and present_ids:
@@ -275,6 +305,13 @@ def run_phase2(
                 n_tracks=len(present_ids),
                 silhouette=id_assignment.info.silhouette,
                 n_blocked_merges=id_assignment.info.n_blocked_merges,
+            )
+            # Per-identity mean embeddings in the ORIGINAL embedding space (not the per-run PCA
+            # space, which isn't comparable across runs). Consumed by game mode (game.py) to
+            # stitch identities across live-play segments of a full game.
+            _write_identity_embeddings(
+                out_dir / "identities.npz", track_emb, present_ids,
+                id_assignment.track_identity, embedder,
             )
 
     # ---- Labeling set (optional): per-track crop montages + a labels.csv template ----
@@ -393,6 +430,23 @@ def run_phase2(
         identity_quality=identity_quality, players_path=players_path,
         shifts_path=shifts_path, n_shifts=n_shifts,
         report_path=report_path, shift_chart_path=shift_chart_path,
+    )
+
+
+def _write_identity_embeddings(
+    path: Path, track_emb: np.ndarray, present_ids: list[int],
+    track_identity: dict[int, int], embedder: str,
+) -> None:
+    """Save one L2-normalised mean embedding per identity, for cross-segment stitching."""
+    ids = sorted(set(track_identity.values()))
+    rows = []
+    for pid in ids:
+        member_rows = [i for i, t in enumerate(present_ids) if track_identity.get(t) == pid]
+        v = track_emb[member_rows].mean(axis=0)
+        rows.append(v / (np.linalg.norm(v) + 1e-8))
+    np.savez(
+        path, ids=np.array(ids, dtype=int), centroids=np.vstack(rows),
+        embedder=np.array(embedder),
     )
 
 

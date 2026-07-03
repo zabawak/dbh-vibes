@@ -71,6 +71,85 @@ spans), and `boxscore.json` (per-game roll-up). Add `--no-siglip` to skip team c
 faster run, `--clips` to also export per-segment raw clips, or `--label-crops` to export the
 labeling set for the eval harness.
 
+## What works today (Phase 3.5 — the OSNet re-ID embedder, priority #6)
+
+Team clustering and identity re-ID both rode on a repurposed **SigLIP** embedding, and the measured
+ceiling showed it: team accuracy 56.5% on the low-contrast white/dark kits (~chance is 50%), and
+identity over-segmentation. `--embedder osnet` swaps in **OSNet-AIN** (`reid_embedder.py` + a
+vendored `osnet.py`), a purpose-built person re-identification network — trained to embed a person
+crop so the same person is close and different people are far, across camera domains. Same
+`embed()` interface, so the whole downstream stack (per-track pooling, team clustering, constrained
+identity clustering) is reused unchanged.
+
+- **Measured on the reference clip (fresh labels, identical tracks): team accuracy 57.1% (SigLIP)
+  → 100.0% (OSNet), 21/21.** The "white-vs-dark doesn't separate by appearance" ceiling was a
+  property of the borrowed embedding, not the footage. Role stays 100%.
+- **Identity improves but isn't solved**: OSNet merges 2× the same-person fragments (all
+  team-consistent, 0 temporal violations) yet still over-segments — see
+  [`docs/identity-reid.md`](docs/identity-reid.md) for the measured same/different distance
+  distributions and per-embedder `--reid-distance` defaults.
+- **Cheaper too**: 2.2M params vs SigLIP's ~93M (~10× faster per crop on CPU). Weights (~56 MB,
+  torchreid model zoo) download once on first use; `--reid-weights` picks the checkpoint
+  (`msdc` domain-generalized default, `msmt17`, or a local `.pth`).
+
+```bash
+python -m dbh_vibes data/game.mp4 --out runs/game --phase2 --reid --embedder osnet
+```
+
+## What works today (human-in-the-loop naming — `--apply-labels`)
+
+The labeling loop now closes: `--label-crops` exports per-track montages, a human fills
+`labels.csv` (~2 min), and `--apply-labels` pushes those tags **back into the output** — names
+propagate through the pipeline's own clusters (tag one track of an identity → every fragment of
+that player is named; tag one track of a team → the whole side is named; frame-weighted majority,
+human tags win on their own tracks). `tracks.csv` gains `team_name`/`player_name`, `players.csv`
+gains `name`, and `report.html`/`shift_chart.png` re-render with real names. Clustering conflicts
+(one identity carrying two names = over-merge; one name across identities = over-segmentation) are
+printed, not hidden — they're exactly the re-ID failure modes worth watching.
+
+```bash
+python -m dbh_vibes --apply-labels runs/game/labels.csv --out runs/game
+```
+
+## What works today (full-game mode — `--game`)
+
+The end-to-end path from a raw game recording to one merged game report (`game.py`):
+
+1. cheap detection-only pre-pass finds the live-play segments (the middle third of the reference
+   recording is between-games downtime — skipped, never analyzed);
+2. each segment is cut frame-accurately (ffmpeg re-encode) and run through the full
+   `--phase2 --reid` pipeline;
+3. **per-segment identities are stitched into game-level players**: each segment saves one mean
+   embedding per identity (`identities.npz`), and the same constrained-agglomerative core clusters
+   them under a hard *same-segment cannot-link* (within-segment clustering already ruled those
+   pairs different people);
+4. **shifts stitch across stoppages in live time**: track spans are mapped onto a compressed
+   live-frame axis before gap-based shift detection, so an idle stoppage never splits a shift and
+   bench gaps are measured in *live* seconds;
+5. merged `players.csv`/`shifts.csv`/`boxscore.json` land in the game directory in the standard
+   schema — the report renderer and `--apply-labels` work on the whole game unchanged.
+
+```bash
+python -m dbh_vibes data/full_game.mp4 --out runs/game --game --embedder osnet --roster 13
+# knobs: --max-segments N (bound a first CPU run), --clip-stride/--min-segment/--merge-gap/--pad
+```
+
+**Validated on a real 10-minute slice of the reference game** (`data/game_10min.mp4`, 5-on-5 +
+goalies with line changes and stoppages): the pre-pass found 11 live segments (574 s of play in
+600 s); all 11 analyzed with `--embedder osnet --roster 13`; **162 per-segment identities stitched
+into 23 game players** (teams 15 v 8), each top player spanning 7–10 segments with 3–10 shifts and
+254–480 s TOI. Global consistency check: summed per-player TOI (6176 s) matches expected on-surface
+player-seconds (574 s live × ~11 players on surface ≈ 6314 s) within ~2%. Passing `--roster` down
+to the per-segment clustering was required — data-driven per-segment counts over-segment (40+
+identities/segment), ballooning the pool beyond what the constrained game merge can reach.
+
+Honest caveats: 23 players for a ~13-person roster means residual over-segmentation splits some
+players' stats across rows (the same-segment cannot-link floors the merge — see the identity-recall
+priority in [`docs/feature-ideas.md`](docs/feature-ideas.md)); team ids are anchored per segment
+(kit-colour anchor is designed to be run-invariant, but low-contrast kits can flip an anchor
+between segments — the merge takes a frame-weighted majority per player); appearance drift over a
+long game stresses the cross-segment stitch.
+
 ## What works today (Phase 3 — per-player identity)
 
 Detection + ByteTrack give a track id that survives only one continuous on-surface stretch, so one

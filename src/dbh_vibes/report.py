@@ -95,6 +95,7 @@ def build_shift_chart(
     shift_rows: list[dict],
     *,
     duration_s: float | None = None,
+    names: dict[int, str] | None = None,
 ) -> ShiftChart:
     """Lay out shifts into a player-by-time Gantt — the pure core of the shift chart.
 
@@ -105,6 +106,8 @@ def build_shift_chart(
         duration_s: x-axis extent (game seconds). Defaults to the latest shift end, so the chart
             spans exactly the observed play; pass the box-score game duration to anchor it to the
             full clip instead.
+        names: optional ``{player_id: human name}`` (from ``--apply-labels``); named players are
+            labeled by name instead of the synthetic ``P<id>``.
 
     Returns:
         A ``ShiftChart`` whose rows are ordered by **team, then most time-on-surface first** (so the
@@ -137,7 +140,7 @@ def build_shift_chart(
             player=pid,
             team=team,
             row=i,
-            label=_player_label(pid, team),
+            label=_player_label(pid, team, (names or {}).get(pid)),
             toi_s=round(toi(pid), 2),
             n_shifts=len(bars),
             bars=bars,
@@ -145,8 +148,9 @@ def build_shift_chart(
     return ShiftChart(rows=tuple(rows), duration_s=float(span))
 
 
-def _player_label(player: int, team: int | None) -> str:
-    return f"P{player}" + (f" (T{team})" if team is not None else "")
+def _player_label(player: int, team: int | None, name: str | None = None) -> str:
+    base = name if name else f"P{player}"
+    return base + (f" (T{team})" if team is not None else "")
 
 
 def _parse_team(value) -> int | None:
@@ -257,7 +261,16 @@ def build_report(run_dir: str | Path, *, title: str | None = None) -> GameReport
     teams = team_totals_from_players(players)
 
     duration_s = game.get("duration_s")
-    chart = build_shift_chart(shift_rows, duration_s=duration_s)
+    # Human names, if --apply-labels populated players.csv's `name` column.
+    names: dict[int, str] = {}
+    for p in players:
+        nm = (p.get("name") or "").strip()
+        if nm:
+            try:
+                names[int(p["player"])] = nm
+            except (TypeError, ValueError, KeyError):
+                pass
+    chart = build_shift_chart(shift_rows, duration_s=duration_s, names=names)
 
     heatmap = run_dir / "heatmap.jpg"
     return GameReport(
@@ -382,6 +395,9 @@ def _player_table_html(report: GameReport) -> str:
         ("longest_shift_s", "Longest (s)"), ("active_seconds", "Active (s)"),
         ("n_fragments", "Fragments"),
     ]
+    # Show human names (from --apply-labels) when any player row carries one.
+    if any((p.get("name") or "").strip() for p in report.players):
+        cols.insert(0, ("name", "Name"))
     head = "".join(f"<th>{_esc(label)}</th>" for _, label in cols)
     body = []
     for p in report.players:

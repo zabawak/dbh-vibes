@@ -142,3 +142,54 @@ carrying real signal — re-run cheaply with `python eval/validate_reid.py runs/
   to tell apart by sight in these crops, so a confident per-track identity labelling needs sharper
   footage or a frame-level review tool. Until then, validation leans on the label-free soundness +
   team-purity checks above.
+
+## Update (2026-07): the OSNet embedder — priority #6 landed
+
+The first item under *What would move identity accuracy* is now in: `--embedder osnet` replaces the
+repurposed SigLIP embedding with OSNet-AIN, a real person re-ID network (`reid_embedder.py`,
+vendored architecture in `osnet.py`; the same embedding is shared with team clustering, where it
+took team accuracy 57.1% → **100%** on fresh labels — see team-clustering.md).
+
+For **identity**, measured on the reference clip with known same-person track pairs (labeled by
+sight from the fresh montages — distinctive gear only, so a partial but confident set):
+
+- **SigLIP**: same-person pair distances `[0.18, 0.23, 0.54, 0.67, 0.87, 1.29]` vs same-team
+  different-person pairs `[0.30, 0.48, 0.51, 0.65, ...]` — fully interleaved. No threshold can
+  separate them; SigLIP genuinely cannot do identity on this footage.
+- **OSNet**: same-person `[0.03, 0.08, 0.30, 0.51, 0.60, 0.79]` vs different-person
+  `[0.04, 0.29, 0.31, 0.66, 0.70, ...]` — clearly better ordered (the closest pairs are true
+  same-person) but still overlapping, so the data-driven threshold remains a precision/recall dial,
+  not a clean cut. Two structural mitigations apply: the **temporal cannot-link** vetoes the most
+  dangerous near-duplicates (concurrent look-alikes — the 0.04 different-person pair is exactly
+  that, two white shirts on the surface together), and `--roster` sidesteps the threshold entirely.
+- Per-embedder defaults now live in `pipeline.REID_DISTANCE_DEFAULTS` (siglip 0.35, osnet 0.45 —
+  both deliberately conservative). On the reference clip at defaults: SigLIP merges 2 fragment
+  pairs, OSNet 4; all label-free checks pass for both (0 temporal violations, every merge
+  team-consistent — `eval/validate_reid.py`).
+
+The honest summary: OSNet lifts identity from "no signal beyond the temporal constraint" to "real
+but imperfect appearance signal". The remaining levers are unchanged — higher-resolution capture,
+motion priors linking exit/entry continuity, and per-individual ground truth for a true accuracy
+number.
+
+### 3-minute-clip threshold sweep (156 fragments, ~15–20 people)
+
+Sweeping the data-driven `--reid-distance` on the line-change clip (490 raw tracks → 208 players →
+156 with crops; heavier fragmentation than the numbers earlier in this doc — dependency-version
+drift changes the tracker's behaviour, another argument for the identity-recall work):
+
+| threshold | SigLIP identities | OSNet identities | OSNet silhouette |
+|---|---|---|---|
+| 0.25 | 118 | 87 | 0.10 |
+| 0.35 (siglip default) | 88 | 70 | 0.11 |
+| 0.45 (osnet default) | 61 | 56 | 0.11 |
+| 0.55 | 47 | 38 | 0.08 |
+| 0.70 | 34 | 32 | 0.06 |
+
+OSNet dominates at every threshold (fewer, cleaner identities; silhouette peaks in the 0.35–0.50
+band, which brackets its 0.45 default) — but neither embedder shows an elbow at roster size. Forcing
+the merge down to 15 identities accepts merge distances with median 0.25 and p90 0.64 (OSNet) —
+well past any safe threshold — so **the data-driven count remains a precision dial, and `--roster`
+remains the accuracy path** on heavily fragmented footage. Reproduce with the recipe in
+`data/README.md` (the sweep script lives in the session notes; embeddings + spans are saved by the
+pipeline's shared embedding pass).
