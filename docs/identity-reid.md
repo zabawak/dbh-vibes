@@ -171,3 +171,25 @@ The honest summary: OSNet lifts identity from "no signal beyond the temporal con
 but imperfect appearance signal". The remaining levers are unchanged — higher-resolution capture,
 motion priors linking exit/entry continuity, and per-individual ground truth for a true accuracy
 number.
+
+### 3-minute-clip threshold sweep (156 fragments, ~15–20 people)
+
+Sweeping the data-driven `--reid-distance` on the line-change clip (490 raw tracks → 208 players →
+156 with crops; heavier fragmentation than the numbers earlier in this doc — dependency-version
+drift changes the tracker's behaviour, another argument for the identity-recall work):
+
+| threshold | SigLIP identities | OSNet identities | OSNet silhouette |
+|---|---|---|---|
+| 0.25 | 118 | 87 | 0.10 |
+| 0.35 (siglip default) | 88 | 70 | 0.11 |
+| 0.45 (osnet default) | 61 | 56 | 0.11 |
+| 0.55 | 47 | 38 | 0.08 |
+| 0.70 | 34 | 32 | 0.06 |
+
+OSNet dominates at every threshold (fewer, cleaner identities; silhouette peaks in the 0.35–0.50
+band, which brackets its 0.45 default) — but neither embedder shows an elbow at roster size. Forcing
+the merge down to 15 identities accepts merge distances with median 0.25 and p90 0.64 (OSNet) —
+well past any safe threshold — so **the data-driven count remains a precision dial, and `--roster`
+remains the accuracy path** on heavily fragmented footage. Reproduce with the recipe in
+`data/README.md` (the sweep script lives in the session notes; embeddings + spans are saved by the
+pipeline's shared embedding pass).
