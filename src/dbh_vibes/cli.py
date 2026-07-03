@@ -119,6 +119,22 @@ def build_parser() -> argparse.ArgumentParser:
              "(siglip: 0.35, osnet: tuned separately — the embedding spaces scale differently).",
     )
     parser.add_argument(
+        "--handoff-gap",
+        type=float,
+        default=1.0,
+        help="With --reid, max seconds between one track ending and another starting for them to "
+             "count as a tracker handoff (same person, pre-merged before appearance clustering; "
+             "ambiguous/contested handoffs are never linked). 0 disables handoff linking. "
+             "Default: 1.",
+    )
+    parser.add_argument(
+        "--handoff-dist",
+        type=float,
+        default=0.05,
+        help="With --reid, max distance between the handoff tracks' exit/entry foot points, as a "
+             "fraction of frame width (default: 0.05).",
+    )
+    parser.add_argument(
         "--shift-gap",
         type=float,
         default=15.0,
@@ -288,6 +304,8 @@ def _run_phase2(args) -> int:
             embedder=args.embedder,
             reid_weights=args.reid_weights,
             crops_per_track=args.crops_per_track,
+            handoff_gap_seconds=args.handoff_gap,
+            handoff_dist_frac=args.handoff_dist,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -317,7 +335,8 @@ def _run_phase2(args) -> int:
     if iq is not None:
         sil = f"{iq.silhouette:.2f}" if iq.silhouette == iq.silhouette else "n/a"  # NaN-safe
         print(f"Identity re-ID: {iq.n_tracks} player tracks -> {iq.n_identities} identities "
-              f"(silhouette {sil}, {iq.n_blocked_merges} concurrent-overlap merge(s) blocked)")
+              f"(silhouette {sil}, {iq.n_blocked_merges} concurrent-overlap merge(s) blocked, "
+              f"{iq.n_handoffs} handoff link(s) pre-merged)")
         if result.n_shifts is not None:
             print(f"Shifts: {iq.n_tracks} track fragments -> {result.n_shifts} true on-surface "
                   f"shifts across {iq.n_identities} players "
@@ -408,6 +427,7 @@ def _run_game(args) -> int:
             pad_seconds=args.pad, embedder=args.embedder, reid_weights=args.reid_weights,
             roster=args.roster, reid_distance=args.reid_distance,
             shift_gap_seconds=args.shift_gap, max_segments=args.max_segments,
+            handoff_gap_seconds=args.handoff_gap, handoff_dist_frac=args.handoff_dist,
         )
     except (FileNotFoundError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

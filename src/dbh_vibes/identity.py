@@ -57,6 +57,7 @@ class IdentityInfo:
     sizes: list[int]
     silhouette: float
     n_blocked_merges: int = 0
+    n_handoffs: int = 0     # spatiotemporal handoff links honoured as pre-merges (0 = none/off)
     method: str = "agglomerative"
     reduced: np.ndarray = field(repr=False, default_factory=lambda: np.empty((0, 0)))
     centroids: np.ndarray = field(repr=False, default_factory=lambda: np.empty((0, 0)))
@@ -83,6 +84,97 @@ def temporal_overlap_matrix(spans: list[tuple[int, int]], min_gap: int = 0) -> n
             if max(fi, fj) <= min(li, lj) + min_gap:
                 conflict[i, j] = conflict[j, i] = True
     return conflict
+
+
+def detect_handoffs(
+    spans: list[tuple[int, int]],
+    exit_xy: list[tuple[float, float] | None],
+    entry_xy: list[tuple[float, float] | None],
+    *,
+    fps: float,
+    frame_width: float,
+    max_gap_seconds: float = 1.0,
+    max_dist_frac: float = 0.05,
+) -> list[tuple[int, int]]:
+    """Find track-fragment pairs that are almost certainly one person: a tracker **handoff**.
+
+    ByteTrack routinely drops a player mid-surface (occlusion, blur) and re-acquires them moments
+    later as a *new* track id. The new track then *starts* very near where the old one *ended*,
+    within a beat — evidence of identity that is completely independent of appearance, and far
+    stronger than any embedding similarity. This detector returns the ``(i, j)`` index pairs where
+    track ``j`` begins no more than ``max_gap_seconds`` after track ``i`` ends **and** ``j``'s entry
+    point lies within ``max_dist_frac`` of the frame width from ``i``'s exit point.
+
+    This is a *high-precision* linker whose output is treated as ground truth by the clustering, so
+    two safeguards keep false links out (both were observed on real footage before they existed):
+
+    * **Strict bars.** The default gap is 1 s — measured true re-acquires sit well under it (~0.7 s)
+      while the observed *false* links (a different player crossing the dropout spot) sat at
+      1.3–1.9 s.
+    * **Ambiguity rejection.** If more than one track starts near an exit (or more than one track's
+      exit is near an entry) within the window, *no* link is made for that endpoint — the
+      crossing-paths case is exactly when the nearest candidate is wrong, so an ambiguous handoff
+      is worth less than a fragmented identity.
+
+    Tracks missing a position (no detection recorded) never match. Pure stdlib — unit-testable
+    without video.
+    """
+    max_gap_frames = max_gap_seconds * fps if fps else 0.0
+    max_dist = max_dist_frac * frame_width
+    n = len(spans)
+    # All candidate links first; ambiguity is judged over the full candidate set.
+    candidates: list[tuple[int, int]] = []
+    for i in range(n):
+        if exit_xy[i] is None:
+            continue
+        _, end_i = spans[i]
+        for j in range(n):
+            if i == j or entry_xy[j] is None:
+                continue
+            start_j, _ = spans[j]
+            gap = start_j - end_i
+            if gap <= 0 or gap > max_gap_frames:
+                continue
+            dx = entry_xy[j][0] - exit_xy[i][0]
+            dy = entry_xy[j][1] - exit_xy[i][1]
+            if (dx * dx + dy * dy) ** 0.5 <= max_dist:
+                candidates.append((i, j))
+    # Keep only unambiguous, mutually-unique links: exit i matches exactly one entry j and vice
+    # versa. A contested endpoint (players crossing paths at the dropout) links nothing.
+    from collections import Counter
+
+    exit_use = Counter(i for i, _ in candidates)
+    entry_use = Counter(j for _, j in candidates)
+    return [(i, j) for i, j in candidates if exit_use[i] == 1 and entry_use[j] == 1]
+
+
+def merge_handoff_groups(
+    n: int, handoffs: list[tuple[int, int]], cannot_link: np.ndarray
+) -> list[list[int]]:
+    """Union handoff pairs into initial groups, refusing any union that violates a cannot-link.
+
+    Returns one member-list per group covering all ``n`` items (singletons included). Union-find
+    with a safety check: if linking two components would put a cannot-link pair in one group (e.g.
+    contradictory handoffs), that link is skipped — soundness beats recall.
+    """
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    members: dict[int, list[int]] = {i: [i] for i in range(n)}
+    for i, j in handoffs:
+        ri, rj = find(i), find(j)
+        if ri == rj:
+            continue
+        if cannot_link[np.ix_(members[ri], members[rj])].any():
+            continue
+        parent[rj] = ri
+        members[ri].extend(members.pop(rj))
+    return [members[r] for r in sorted(members)]
 
 
 def _reduce_identity(
@@ -117,6 +209,7 @@ def constrained_agglomerative(
     *,
     n_identities: int | None = None,
     distance_threshold: float = 0.35,
+    initial_groups: list[list[int]] | None = None,
 ) -> tuple[np.ndarray, int]:
     """Average-linkage agglomerative clustering with hard cannot-link constraints.
 
@@ -125,6 +218,11 @@ def constrained_agglomerative(
     ``n_identities`` clusters when given; otherwise stops when the closest *permissible* merge is
     farther than ``distance_threshold`` (a data-driven identity count). The cannot-link veto is what
     keeps two simultaneously-on-surface players apart even if their gear looks alike.
+
+    ``initial_groups`` optionally seeds the clustering with pre-merged clusters (a partition of
+    ``0..n-1`` — e.g. spatiotemporal handoff chains, which are near-certain same-person links that
+    should not have to pass the appearance bar). Groups must already respect the cannot-link
+    constraint (see ``merge_handoff_groups``).
 
     Returns ``(labels, n_blocked_merges)`` where ``labels`` are contiguous ids ``0..K-1`` and
     ``n_blocked_merges`` counts how often the closest candidate merge was vetoed by a constraint.
@@ -138,8 +236,13 @@ def constrained_agglomerative(
     # Pairwise cosine distance (points are unit vectors → 1 - dot). Clip tiny negatives from fp.
     dist = np.clip(1.0 - points @ points.T, 0.0, 2.0)
 
-    members: list[list[int]] = [[i] for i in range(n)]
-    alive = list(range(n))
+    if initial_groups is not None:
+        members: list[list[int]] = [list(g) for g in initial_groups if g]
+        assert sorted(m for g in members for m in g) == list(range(n)), \
+            "initial_groups must partition all items"
+    else:
+        members = [[i] for i in range(n)]
+    alive = list(range(len(members)))
     blocked = 0
 
     def clusters_conflict(a: int, b: int) -> bool:
@@ -215,6 +318,7 @@ def cluster_identities(
     min_gap: int = 0,
     n_components: int = 24,
     random_state: int = 42,
+    handoffs: list[tuple[int, int]] | None = None,
 ) -> tuple[np.ndarray, IdentityInfo]:
     """Cluster per-track embeddings into per-player identities. Returns ``(labels, IdentityInfo)``.
 
@@ -225,6 +329,11 @@ def cluster_identities(
     ``n_identities`` pins the roster size if you know it; otherwise the count is data-driven from
     ``distance_threshold`` (and floored by the max number of mutually-overlapping tracks). Rows of
     ``track_emb`` and entries of ``spans`` must be aligned to the same track order.
+
+    ``handoffs`` optionally supplies spatiotemporal handoff pairs (``detect_handoffs`` — index
+    pairs into the same row order): near-certain same-person links that are honoured as pre-merged
+    groups *before* appearance clustering, so a tracker dropout doesn't need to pass the embedding
+    bar to be stitched. Links that would violate the temporal constraint are dropped, not trusted.
     """
     n = len(track_emb)
     if n == 0:
@@ -234,8 +343,16 @@ def cluster_identities(
 
     reduced = _reduce_identity(track_emb, n_components, random_state)
     conflict = temporal_overlap_matrix(spans, min_gap=min_gap)
+    groups = None
+    n_handoffs = 0
+    if handoffs:
+        groups = merge_handoff_groups(n, handoffs, conflict)
+        n_handoffs = n - len(groups)          # unions actually applied after the safety check
+        if n_handoffs == 0:
+            groups = None
     labels, blocked = constrained_agglomerative(
-        reduced, conflict, n_identities=n_identities, distance_threshold=distance_threshold
+        reduced, conflict, n_identities=n_identities, distance_threshold=distance_threshold,
+        initial_groups=groups,
     )
 
     ids, counts = np.unique(labels, return_counts=True)
@@ -247,6 +364,7 @@ def cluster_identities(
         sizes=[int(c) for c in counts],
         silhouette=sil,
         n_blocked_merges=blocked,
+        n_handoffs=n_handoffs,
         reduced=reduced,
         centroids=centroids,
     )
@@ -290,6 +408,11 @@ def assign_identities(
     n_identities: int | None = None,
     distance_threshold: float = 0.35,
     min_gap: int = 0,
+    endpoints: dict[int, tuple[tuple[float, float] | None, tuple[float, float] | None]] | None = None,
+    fps: float = 0.0,
+    frame_width: float = 0.0,
+    handoff_gap_seconds: float = 1.0,
+    handoff_dist_frac: float = 0.05,
 ) -> IdentityAssignment:
     """Assign one identity id per track from precomputed per-track embeddings + frame spans.
 
@@ -297,13 +420,27 @@ def assign_identities(
     ``spans[tid]`` is each track's ``(first_frame, last_frame)``. Embeddings are precomputed so the
     pipeline can share the single SigLIP pass with team classification rather than paying for it
     twice.
+
+    ``endpoints[tid] = (entry_xy, exit_xy)`` optionally supplies each track's first/last foot
+    position; combined with ``fps``/``frame_width`` it enables **spatiotemporal handoff linking**
+    (``detect_handoffs``): a track that starts moments after — and next to — where another ended is
+    pre-merged as the same person before appearance clustering. Set ``handoff_gap_seconds <= 0`` to
+    disable.
     """
     if len(present_ids) == 0:
         return IdentityAssignment({}, {}, IdentityInfo(0, [], float("nan")))
     span_list = [spans[t] for t in present_ids]
+    handoffs = None
+    if endpoints and fps > 0 and frame_width > 0 and handoff_gap_seconds > 0:
+        entry_xy = [endpoints.get(t, (None, None))[0] for t in present_ids]
+        exit_xy = [endpoints.get(t, (None, None))[1] for t in present_ids]
+        handoffs = detect_handoffs(
+            span_list, exit_xy, entry_xy, fps=fps, frame_width=frame_width,
+            max_gap_seconds=handoff_gap_seconds, max_dist_frac=handoff_dist_frac,
+        )
     labels, info = cluster_identities(
         track_emb, span_list, n_identities=n_identities,
-        distance_threshold=distance_threshold, min_gap=min_gap,
+        distance_threshold=distance_threshold, min_gap=min_gap, handoffs=handoffs,
     )
     conf = info.conf if info.conf is not None else np.full(len(present_ids), 0.5)
     track_identity = {tid: int(labels[i]) for i, tid in enumerate(present_ids)}

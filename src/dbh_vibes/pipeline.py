@@ -72,6 +72,8 @@ class TrackStat:
     active_frames: int = 0           # frames seen while play was live
     on_surface_frames: int = 0       # frames whose foot point was on the playing surface
     areas: list[float] = field(default_factory=list)
+    entry_xy: tuple[float, float] | None = None   # foot point at first detection (handoff linking)
+    exit_xy: tuple[float, float] | None = None    # foot point at last detection so far
     team: int | None = None
     team_conf: float | None = None   # confidence in the team assignment ([0,1]); label-free
     player: int | None = None        # Phase 3 identity: tracks of one person share this id
@@ -115,6 +117,7 @@ class IdentityQuality:
     n_tracks: int
     silhouette: float
     n_blocked_merges: int
+    n_handoffs: int = 0    # spatiotemporal handoff links pre-merged before appearance clustering
 
 
 @dataclass
@@ -166,6 +169,8 @@ def run_phase2(
     shift_gap_seconds: float = 15.0,
     embedder: str = "siglip",
     reid_weights: str | None = None,
+    handoff_gap_seconds: float = 1.0,
+    handoff_dist_frac: float = 0.05,
 ) -> Phase2Result:
     """Run the Phase 2 pipeline over a clip and write annotated video, heatmap, and stats.
 
@@ -229,6 +234,10 @@ def run_phase2(
                 ts.last_frame = fi
                 ts.frames_seen += 1
                 ts.areas.append(area)
+                foot = (float(feet[i][0]), float(feet[i][1]))
+                if ts.entry_xy is None:
+                    ts.entry_xy = foot
+                ts.exit_xy = foot
                 if surf[i]:
                     ts.on_surface_frames += 1
                 # Collect team-classification crops only from on-surface detections, so the team
@@ -293,9 +302,12 @@ def run_phase2(
 
         if reid and present_ids:
             spans = {t: (tracks[t].first_frame, tracks[t].last_frame) for t in present_ids}
+            endpoints = {t: (tracks[t].entry_xy, tracks[t].exit_xy) for t in present_ids}
             id_assignment = assign_identities(
                 track_emb, present_ids, spans,
                 n_identities=roster_size, distance_threshold=reid_distance,
+                endpoints=endpoints, fps=fps, frame_width=float(info.width),
+                handoff_gap_seconds=handoff_gap_seconds, handoff_dist_frac=handoff_dist_frac,
             )
             for tid, pid in id_assignment.track_identity.items():
                 tracks[tid].player = pid
@@ -305,6 +317,7 @@ def run_phase2(
                 n_tracks=len(present_ids),
                 silhouette=id_assignment.info.silhouette,
                 n_blocked_merges=id_assignment.info.n_blocked_merges,
+                n_handoffs=id_assignment.info.n_handoffs,
             )
             # Per-identity mean embeddings in the ORIGINAL embedding space (not the per-run PCA
             # space, which isn't comparable across runs). Consumed by game mode (game.py) to

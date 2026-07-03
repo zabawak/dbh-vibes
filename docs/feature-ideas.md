@@ -116,11 +116,14 @@ gate on harder pieces (ball detection, homography). History of the completed pri
 
 1. **Identity recall on real rosters** — the remaining quality gap. OSNet fixed teams outright but
    identity still over-segments at safe thresholds. Three compounding levers, in increasing cost:
-   (a) **more crops per track** now that embedding is ~10× cheaper (the per-track mean gets more
-   robust); (b) **spatiotemporal linking priors** — link fragments whose exit/entry positions and
-   times are continuous (the tracker lost them mid-surface), independent of appearance; (c) a
-   **frame-level review tool** to produce per-individual ground truth so identity accuracy is a
-   measured number, not a proxy.
+   (a) **more crops per track** now that embedding is ~10× cheaper (`--crops-per-track` knob is in;
+   effect unmeasured pending identity ground truth); (b) ✅ **spatiotemporal handoff linking** —
+   **done & validated** (`detect_handoffs`, on by default): exit/entry continuity pre-merges
+   tracker-dropout fragments before appearance clustering — on the reference clip, known
+   same-person pairs merged went **1/6 → 4/6 with 0 cross-team merges** (1 s gap + ambiguity
+   rejection; see docs/identity-reid.md); (c) a **frame-level review tool** to produce
+   per-individual ground truth so identity accuracy is a measured number, not a proxy — now the
+   main open piece, since bench-length gaps are beyond what handoffs may touch.
 2. **A real pinnie/vivid-kit clip** to confirm the kit-colour prior end-to-end on untouched footage
    (validated synthetically only), and a second camera setup to broaden the eval set.
 3. **Ball detection (fine-tuned small-object detector)** — the long-pole unlock for every event

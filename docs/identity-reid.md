@@ -193,3 +193,33 @@ well past any safe threshold — so **the data-driven count remains a precision 
 remains the accuracy path** on heavily fragmented footage. Reproduce with the recipe in
 `data/README.md` (the sweep script lives in the session notes; embeddings + spans are saved by the
 pipeline's shared embedding pass).
+
+## Update (2026-07): spatiotemporal handoff linking — the recall lever landed
+
+The second item under *What would move identity accuracy* is now in: **handoff linking**
+(`identity.detect_handoffs`, on by default with `--reid`; `--handoff-gap 0` disables). A tracker
+dropout mid-surface produces a new track that *starts moments after — and next to — where the old
+one ended*. That exit/entry continuity is identity evidence completely independent of appearance,
+so those pairs are **pre-merged before appearance clustering** (union-find into initial groups for
+the constrained agglomerative clusterer; any link that would violate the temporal cannot-link is
+dropped, not trusted).
+
+Two safeguards keep it high-precision, both earned on real footage: the first cut (2 s gap, no
+ambiguity check) produced 2 cross-team merges — a *different* player crossing the dropout spot
+1.3–1.9 s later. The shipped version uses a **1 s gap** (measured true re-acquires sit under
+~0.7 s) and **ambiguity rejection** (a contested exit/entry — more than one candidate in range —
+links nothing).
+
+Measured on the 30 s reference clip (OSNet embedder, identical tracks):
+
+| config | identities (29 tracks) | known same-person pairs merged | cross-team merges |
+|---|---|---|---|
+| appearance only | 25 | 1/6 | 0 |
+| + handoffs (2 s, no ambiguity check) | 19 | 2/6 | **2** ❌ |
+| **+ handoffs (1 s + ambiguity rejection)** | **22** | **4/6** | **0** ✅ |
+
+All label-free checks pass (0 temporal violations; 8/8 merges team-consistent), and every
+multi-track identity matches the hand team labels — including the three-fragment chain
+`7 → 280 → 550` that appearance alone never found. The two still-unmerged known pairs are separated
+by *long* gaps (bench trips), which is exactly the case handoffs must not touch — that recall
+belongs to appearance/ground-truth work.

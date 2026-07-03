@@ -196,6 +196,8 @@ def run_game(
     reid_distance: float | None = None,
     shift_gap_seconds: float = 15.0,
     max_segments: int | None = None,
+    handoff_gap_seconds: float = 1.0,
+    handoff_dist_frac: float = 0.05,
 ) -> GameResult:
     """Process a full raw game video end to end. See the module docstring for the stages.
 
@@ -254,6 +256,7 @@ def run_game(
             reid=True, embedder=embedder, reid_weights=reid_weights,
             roster_size=roster, reid_distance=reid_distance,
             shift_gap_seconds=shift_gap_seconds,
+            handoff_gap_seconds=handoff_gap_seconds, handoff_dist_frac=handoff_dist_frac,
         )
         seg_dirs.append(seg_dir)
         npz_path = seg_dir / "identities.npz"
