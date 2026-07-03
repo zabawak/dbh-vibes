@@ -79,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
              "('msdc' domain-generalized [default], 'msmt17') or a path to a .pth file.",
     )
     parser.add_argument(
+        "--crops-per-track",
+        type=int,
+        default=6,
+        help="With --phase2, how many crops to sample per track for the appearance embedding "
+             "(default: 6). More crops = a more robust per-track mean; osnet is ~10x cheaper "
+             "per crop than siglip, so raising this is affordable there.",
+    )
+    parser.add_argument(
         "--clips",
         action="store_true",
         help="With --phase2, also write each live-play segment as a raw clip to <out>/clips/.",
@@ -279,6 +287,7 @@ def _run_phase2(args) -> int:
             shift_gap_seconds=args.shift_gap,
             embedder=args.embedder,
             reid_weights=args.reid_weights,
+            crops_per_track=args.crops_per_track,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
