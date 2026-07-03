@@ -11,18 +11,16 @@ depends on*. See [architecture.md](architecture.md) for the phased roadmap and
 ## Where we are & what's next (priorities)
 
 Phase 1–2 are in: detection + tracking, surface filter, activity gating, auto-clip, position
-heatmap, team clustering, and a **labeled eval set + harness**. Team clustering's run-to-run
-*instability is fixed* (deterministic; 100% stable on real footage), a **kit-colour prior** handles
-the common pinnie case, and **background-suppressed crops** nudged accuracy 52.2% → 56.5%; what's
-left there is *accuracy on low-contrast kits*. **Phase 3 is now in too**: appearance re-ID (priority
-#3 — per-player identity via constrained agglomerative clustering with a temporal constraint) and
-**shift detection** on top of it (priority #4 — true per-player on-surface shifts via gap-based
-bench detection). **Priority #5 is now in too**: a **per-game report + shift chart** (`report.py`)
-renders those stats into a self-contained `report.html` + `shift_chart.png`, so the headline
-per-player numbers are now both *computed and consumable*. The open frontier is the
-**appearance-accuracy ceiling** (team 56.5%; identity over-segments because SigLIP isn't a person
-re-ID model) and the event/spatial stats that gate on harder pieces (ball detection, homography).
-The near-term priorities are:
+heatmap, team clustering, and a **labeled eval set + harness**. **Phase 3 is in**: appearance re-ID
+(priority #3) and **shift detection** (priority #4). **Priority #5 (per-game report + shift chart)
+is in.** **Priority #6 (OSNet re-ID embedder) is in and was decisive: team accuracy 57.1% → 100%
+on the reference clip's fresh labels** — the appearance-accuracy ceiling is broken for teams;
+identity improves but still over-segments at safe thresholds. The labeling loop closed with
+**`--apply-labels` tag propagation** (#7) and the whole thing now runs end-to-end on a raw game
+recording via **`--game` full-game mode** (#8): autoclip → cut → per-segment analysis →
+cross-segment identity stitch → one merged game report. The open frontier is **identity recall**
+(merging more of each player's fragments without false merges) and the event/spatial stats that
+gate on harder pieces (ball detection, homography). History of the completed priorities:
 
 1. **Labeled eval set + harness** — ✅ **done** *(was the binding constraint).* `evaluate.py` +
    `labeling.py` + the `eval/` set close it: `--label-crops` exports one crop montage per track and
@@ -85,17 +83,54 @@ The near-term priorities are:
    **Validated:** the 30 s reference clip renders 13 identities at 1 shift each (correct — too short to
    bench); the 3-min line-change clip renders a multi-shift Gantt with the two teams cleanly grouped
    (green T0 / red T1). *(Done; see "Output & UX" below.)*
-6. **Real re-ID/embedding upgrade (lift the appearance ceiling)** — ⏭️ **next (proposed).** With the
-   report done, the headline per-player stats are now both *computed and consumable* — so the binding
-   limitation is back to **appearance accuracy**: team clustering tops out at 56.5% on the low-contrast
-   white/dark kits, and identity re-ID over-segments (the data-driven 3-min clip split ~13–20 real
-   people into far more identities) because the repurposed SigLIP embedding isn't a person-re-ID
-   model. Swapping in a purpose-built **OSNet/torchreid** embedding (or a hockey-tuned one) in place of
-   SigLIP is the deeper unlock for *every* per-player number. It is a bigger lift with an *uncertain*
-   gain and is hard to validate cleanly without per-individual identity ground truth — hence it waited
-   behind the high-confidence, low-cost report — but it is now the highest-leverage remaining quality
-   lever. Ball detection and homography remain the long-pole unlocks for event/spatial stats but stay
-   deferred (labeling + GPU / fisheye geometry).
+6. **Real re-ID/embedding upgrade (lift the appearance ceiling)** — ✅ **implemented & validated on
+   real footage; the gain was decisive.** `--embedder osnet` (`reid_embedder.py` + vendored
+   `osnet.py`) swaps the repurposed SigLIP embedding for **OSNet-AIN**, a purpose-built person re-ID
+   network (domain-generalized torchreid checkpoint, safe-unpickled, fetched once). Same `embed()`
+   interface → team clustering and identity reuse it unchanged. **Measured on the reference clip
+   with fresh labels (identical tracks): team accuracy 57.1% (SigLIP) → 100.0% (OSNet), 21/21** —
+   the low-contrast white/dark ceiling was the borrowed embedding, not the footage. Identity
+   improves too (2× the same-person merges, all team-consistent, 0 temporal violations; measured
+   same/different distance distributions in docs/identity-reid.md) but still over-segments — the
+   distributions overlap, so the data-driven threshold stays conservative
+   (`REID_DISTANCE_DEFAULTS`: siglip 0.35, osnet 0.45) and `--roster` remains the accuracy path.
+   Bonus: ~10× cheaper per crop than SigLIP on CPU. *(Done; see eval/README.md +
+   docs/team-clustering.md.)*
+7. **Human-in-the-loop tag propagation (`--apply-labels`)** — ✅ **implemented.** The "what's left"
+   half of the labeling loop: apply a filled-in `labels.csv` to a finished run and the human tags
+   flow back into the product — a player tag names every track of that identity, a team tag names
+   the side (frame-weighted majority; human tags win on their own tracks); `tracks.csv` gains
+   `team_name`/`player_name`, `players.csv` gains `name`, and the report/shift chart re-render with
+   real names. Over-merge / over-segmentation conflicts are printed, not hidden. Pure
+   `propagate_labels` core, unit-tested (`roster.py`, `tests/test_roster.py`).
+8. **Full-game mode (`--game`)** — ✅ **implemented.** The missing end-to-end orchestration for a
+   raw game recording: autoclip pre-pass → frame-accurate cuts → `--phase2 --reid` per segment →
+   **cross-segment identity stitch** (per-segment identity centroids from `identities.npz`,
+   clustered with the same constrained core under a same-segment cannot-link) → **shift stitching
+   across stoppages in live time** (`LiveTimeline` compresses dead time out before gap-based shift
+   detection, so a stoppage never splits a shift) → merged `players.csv`/`shifts.csv`/
+   `boxscore.json` + one game report, standard schema so `--report`/`--apply-labels` work on the
+   game dir unchanged (`game.py`, pure cores unit-tested in `tests/test_game.py`).
+
+### Next priorities (proposed, in order)
+
+1. **Identity recall on real rosters** — the remaining quality gap. OSNet fixed teams outright but
+   identity still over-segments at safe thresholds. Three compounding levers, in increasing cost:
+   (a) **more crops per track** now that embedding is ~10× cheaper (the per-track mean gets more
+   robust); (b) **spatiotemporal linking priors** — link fragments whose exit/entry positions and
+   times are continuous (the tracker lost them mid-surface), independent of appearance; (c) a
+   **frame-level review tool** to produce per-individual ground truth so identity accuracy is a
+   measured number, not a proxy.
+2. **A real pinnie/vivid-kit clip** to confirm the kit-colour prior end-to-end on untouched footage
+   (validated synthetically only), and a second camera setup to broaden the eval set.
+3. **Ball detection (fine-tuned small-object detector)** — the long-pole unlock for every event
+   stat (possession, shots, goals, +/- context). Needs labeled frames + a GPU; start with a small
+   labeling pass on this recording.
+4. **Rink homography / top-down mapping** — unlocks speed/distance/zones; blocked on fisheye
+   calibration, which one checkerboard-style capture session (or court-line keypoint annotation)
+   would resolve.
+5. **Performance for full games** — ONNX/OpenVINO export of YOLO + OSNet, adaptive stride during
+   idle stretches, and parallel per-segment analysis in `--game` (segments are independent).
 
 ## Dependency map (what unlocks what)
 
@@ -108,10 +143,12 @@ detection+tracking (done) ─┬─ activity gating (done) ── auto-clip (don
                            ├─ ball detection (new) ───── possession, shots, passes
                            └─ rink homography (new) ──── speed/distance, heatmaps, zones
 ```
-Most **per-player** stats gate on Phase 3 identity (now done) and are now *surfaced* by the per-game
-report + shift chart (priority #5, done); most **event/spatial** stats gate on **ball detection**
-and/or **homography**. The **next** step (priority #6) is a real **re-ID/embedding upgrade** to lift
-the appearance-accuracy ceiling that both team clustering and identity re-ID still sit under.
+Most **per-player** stats gate on Phase 3 identity (done) and are surfaced by the per-game report +
+shift chart (done). The **re-ID/embedding upgrade (priority #6, done — OSNet)** lifted the
+appearance ceiling: team clustering is now measured at 100% on the reference clip; identity carries
+real signal but still under-merges. **`--game` (done)** chains everything over a full raw recording
+with cross-segment identity stitching. Most **event/spatial** stats still gate on **ball
+detection** and/or **homography** — the two remaining "new model / new calibration" long poles.
 
 ## Quick wins (cheap, high leverage)
 

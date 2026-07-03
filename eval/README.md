@@ -1,5 +1,34 @@
 # eval/ — labeled set + harness (priority #1)
 
+> **Two label files.** `sample_labels.csv` is the original set; its track ids came from the
+> Ultralytics/torch versions current at the time, and ids **drift** with dependency versions (the
+> caveat at the bottom of this file, observed in practice: only 14 of its 23 team-labeled tracks
+> line up with a fresh 2026-07 run). **`sample_labels_v2.csv`** is the re-label from fresh montages
+> (`yolo11s`, `--conf 0.25`, 29 player tracks, 21 team-labeled) and is the set the priority #6
+> embedder comparison below uses. Same clip, same labeling method.
+
+## Headline result: the OSNet re-ID embedder closes the team-accuracy gap (priority #6)
+
+Scored on `sample_labels_v2.csv` over identical tracks (only `--embedder` differs):
+
+| embedder | team accuracy | role | notes |
+|---|---|---|---|
+| siglip (bg-suppressed) | 57.1% (12/21) | 100% | reproduces the documented 56.5% baseline |
+| **osnet** (`--embedder osnet`) | **100.0% (21/21)** | 100% | OSNet-AIN person re-ID embedding |
+
+```bash
+python -m dbh_vibes data/sample.mp4 --out runs/osnet --phase2 --model yolo11s.pt --conf 0.25 \
+    --reid --embedder osnet
+python -m dbh_vibes --evaluate eval/sample_labels_v2.csv --tracks runs/osnet/tracks.csv
+```
+
+The long-standing "white-vs-dark kits don't separate by appearance" ceiling was a property of the
+repurposed SigLIP embedding, not of the footage: a purpose-built person re-ID network separates the
+same 21 tracks perfectly. Identity re-ID also improves but is **not** solved: OSNet merges more
+same-person fragments than SigLIP (4 vs 2 multi-track identities on this clip, all team-consistent,
+0 temporal violations) yet still over-segments — known same-person track pairs sit at cosine
+distances that overlap the different-person range (see `docs/identity-reid.md`).
+
 The "binding constraint": team clustering is *stable* but we couldn't measure its true **accuracy**
 on natural footage without ground-truth labels. This directory holds the labels; the harness is
 `src/dbh_vibes/evaluate.py` (run via `python -m dbh_vibes --evaluate`).

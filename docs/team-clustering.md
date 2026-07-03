@@ -186,3 +186,38 @@ baseline) and once with suppression on (the new default, 56.5%) — and score ea
 `python -m dbh_vibes --evaluate eval/sample_labels.csv --tracks <run>/tracks.csv`. Detection and
 tracking are deterministic and unaffected by the flag, so both runs produce the *same* track ids and
 the same 23-track labeled overlap — an apples-to-apples comparison of the embedding change alone.
+
+## Resolved (2026-07): the accuracy ceiling was the embedding — OSNet closes it
+
+Everything above treated "white-vs-dark doesn't separate by appearance" as a property of the
+footage. Priority #6 (`--embedder osnet`, see `reid_embedder.py`) tested that assumption by swapping
+the repurposed SigLIP embedding for a purpose-built person re-ID network (OSNet-AIN,
+domain-generalized torchreid checkpoint), leaving *everything else identical* — same crops, same
+per-track pooling, same clustering core.
+
+Measured on the reference clip with a **fresh label set** (`eval/sample_labels_v2.csv`; the
+original `sample_labels.csv` track ids had drifted with dependency versions, so the clip was
+re-labeled from fresh montages — 29 player tracks, 21 team-labeled, same method):
+
+| embedding | team accuracy | silhouette | notes |
+|---|---|---|---|
+| SigLIP, bg-suppressed (old default) | 57.1% (12/21) | 0.14 | reproduces the 56.5% documented baseline |
+| **OSNet-AIN (`--embedder osnet`)** | **100.0% (21/21)** | 0.17 | full-body raw crops (no bg-suppression) |
+
+Detection/tracking are embedder-independent, so both runs score the same 21 labeled tracks —
+an apples-to-apples comparison of the embedding alone, reproducible with:
+
+```bash
+python -m dbh_vibes data/sample.mp4 --out runs/sig --phase2 --model yolo11s.pt --conf 0.25 --reid
+python -m dbh_vibes data/sample.mp4 --out runs/osn --phase2 --model yolo11s.pt --conf 0.25 --reid --embedder osnet
+python -m dbh_vibes --evaluate eval/sample_labels_v2.csv --tracks runs/sig/tracks.csv   # 57.1%
+python -m dbh_vibes --evaluate eval/sample_labels_v2.csv --tracks runs/osn/tracks.csv   # 100.0%
+```
+
+Notes: the kit-colour prior still wins when it fires (a vivid pinnie team); OSNet is the *fallback*
+embedding for the hard low-contrast case, and is ~10× cheaper per crop than SigLIP on CPU besides.
+Background suppression is auto-disabled for OSNet (it was trained on full-body detections,
+background and all; the torso-crop+mask that helps SigLIP breaks its input distribution) —
+`--no-bg-suppress` still ablates the SigLIP path. One clip, one camera: more footage would broaden
+the claim, but the mechanism (a re-ID model trained to separate people) and the margin (57→100 on
+identical tracks) make the conclusion hard to dodge.

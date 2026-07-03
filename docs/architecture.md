@@ -212,8 +212,22 @@ each player wears distinct gear (shirt, shorts, socks, helmet, build, skin tone)
   (`--report <run-dir>`, no video). Validated on real footage: the 30 s reference clip → 13 identities
   at 1 shift each (correct for a window too short to bench in); the 3-min line-change clip → a
   multi-shift Gantt with the two teams cleanly grouped.
-  - *Next (priority #6):* a real **re-ID/embedding upgrade** (OSNet/torchreid) to lift the appearance
-    ceiling that both team clustering (56.5%) and identity (over-segments) still sit under.
+- **Re-ID embedding upgrade — implemented (`--embedder osnet`, priority #6).** OSNet-AIN person
+  re-ID network (vendored `osnet.py`, checkpoints fetched + safe-unpickled by `reid_embedder.py`)
+  as a drop-in alternative to SigLIP for the shared team/identity embedding. **Measured: team
+  accuracy 57.1% → 100.0% on the reference clip's fresh labels (identical tracks)** — the
+  low-contrast kit ceiling was the borrowed embedding, not the footage. Identity improves (2× the
+  fragment merges, all team-consistent) but still over-segments; per-embedder distance defaults in
+  `pipeline.REID_DISTANCE_DEFAULTS`. ~10× cheaper per crop than SigLIP on CPU.
+- **Human-in-the-loop naming — implemented (`--apply-labels`, `roster.py`).** A filled-in
+  `labels.csv` propagates back through the pipeline's clusters: tag one track → the whole
+  identity/team is named in `tracks.csv`/`players.csv` and the re-rendered report; clustering
+  conflicts (over-merge / over-segmentation) are surfaced, not hidden.
+- **Full-game mode — implemented (`--game`, `game.py`).** Autoclip pre-pass → frame-accurate cuts →
+  per-segment `--phase2 --reid` → cross-segment identity stitch (per-segment centroids from
+  `identities.npz`, same constrained clustering under a same-segment cannot-link) → shifts stitched
+  across stoppages on a compressed **live-time axis** (`LiveTimeline`) → merged
+  `players.csv`/`shifts.csv`/`boxscore.json` + one game report in the standard schema.
 - Multi-camera capture + fusion for full surface coverage and fewer occlusions.
 - Near-real-time processing on a GPU; a richer dashboard once event/spatial stats (ball, homography)
   exist to populate it.
