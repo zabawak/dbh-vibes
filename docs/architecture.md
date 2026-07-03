@@ -242,3 +242,24 @@ identity), see **[feature-ideas.md](feature-ideas.md)**.
   without a GPU. A Colab or local NVIDIA GPU (≥4 GB VRAM) makes it near real-time.
 - **Fine-tuning (open Phase 2 / Phase 3)**: local NVIDIA GPU (≥8 GB) or rented cloud/Colab GPU.
   Defer the buy/rent decision until we actually start labeling and training.
+
+### Full-game mode validation (2026-07, real footage)
+
+`--game` was validated end-to-end on a **10-minute slice of the reference recording**
+(`data/game_10min.mp4`, cut per data/README.md; `--embedder osnet --roster 13 --model yolo11s.pt`):
+
+- Pre-pass: **11 live segments**, 574 s of play in 600 s of video (this slice is dense gameplay —
+  on the full 38-min recording, whose middle third is between-games downtime, the savings are far
+  larger).
+- All 11 segments cut frame-accurately and analyzed; **162 per-segment identities → 23 game
+  players** (teams 15 v 8), top players spanning 7–10 segments, 3–10 shifts, 254–480 s TOI.
+- **Global consistency**: summed per-player TOI 6176 s vs expected on-surface player-seconds
+  (574 s live × ~11 concurrently on surface ≈ 6314 s) — within ~2%. The shift chart reads like a
+  real bench chart (teams grouped, shifts bridging stoppages).
+- **Lesson folded back into the code**: the game `--roster` must pin the *per-segment* clustering
+  too. Data-driven per-segment counts over-segment heavily (40–49 identities in 2-min segments of
+  a ~13-person game → 299 total), and the same-segment cannot-link then floors the game merge far
+  above the roster (51 players). With per-segment pinning: 162 → 23.
+- Remaining gap: 23 > 13 — residual over-segmentation splits some players across rows. This is the
+  **identity recall** priority (docs/feature-ideas.md): more crops per track, spatiotemporal
+  exit/entry linking, and per-individual ground truth to measure against.

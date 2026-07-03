@@ -134,10 +134,21 @@ python -m dbh_vibes data/full_game.mp4 --out runs/game --game --embedder osnet -
 # knobs: --max-segments N (bound a first CPU run), --clip-stride/--min-segment/--merge-gap/--pad
 ```
 
-Honest caveats: team ids are anchored per segment (kit-colour anchor is designed to be
-run-invariant, but low-contrast kits can flip an anchor between segments — the merge takes a
-frame-weighted majority per player), and appearance drift over a long game stresses the
-cross-segment stitch.
+**Validated on a real 10-minute slice of the reference game** (`data/game_10min.mp4`, 5-on-5 +
+goalies with line changes and stoppages): the pre-pass found 11 live segments (574 s of play in
+600 s); all 11 analyzed with `--embedder osnet --roster 13`; **162 per-segment identities stitched
+into 23 game players** (teams 15 v 8), each top player spanning 7–10 segments with 3–10 shifts and
+254–480 s TOI. Global consistency check: summed per-player TOI (6176 s) matches expected on-surface
+player-seconds (574 s live × ~11 players on surface ≈ 6314 s) within ~2%. Passing `--roster` down
+to the per-segment clustering was required — data-driven per-segment counts over-segment (40+
+identities/segment), ballooning the pool beyond what the constrained game merge can reach.
+
+Honest caveats: 23 players for a ~13-person roster means residual over-segmentation splits some
+players' stats across rows (the same-segment cannot-link floors the merge — see the identity-recall
+priority in [`docs/feature-ideas.md`](docs/feature-ideas.md)); team ids are anchored per segment
+(kit-colour anchor is designed to be run-invariant, but low-contrast kits can flip an anchor
+between segments — the merge takes a frame-weighted majority per player); appearance drift over a
+long game stresses the cross-segment stitch.
 
 ## What works today (Phase 3 — per-player identity)
 
