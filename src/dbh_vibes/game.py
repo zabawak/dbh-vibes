@@ -244,10 +244,16 @@ def run_game(
     seg_identities: list[tuple[int, np.ndarray, np.ndarray]] = []
     for seg, clip in zip(analyzed, clip_paths):
         seg_dir = out_dir / f"seg_{seg.index:03d}"
+        # The game roster pins the per-segment clustering too: data-driven counts over-segment
+        # heavily on fragmented footage (measured 27+ identities/segment for a ~13-person game),
+        # which balloons the centroid pool and puts the game-level roster out of reach of the
+        # constrained merge. Pinning is safe downward — a segment where fewer people appear simply
+        # stops merging early at its track count.
         run_phase2(
             clip, seg_dir, model_name=model_name, conf=conf,
             reid=True, embedder=embedder, reid_weights=reid_weights,
-            reid_distance=reid_distance, shift_gap_seconds=shift_gap_seconds,
+            roster_size=roster, reid_distance=reid_distance,
+            shift_gap_seconds=shift_gap_seconds,
         )
         seg_dirs.append(seg_dir)
         npz_path = seg_dir / "identities.npz"
